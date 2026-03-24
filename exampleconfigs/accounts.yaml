@@ -1,0 +1,18 @@
+account: 
+  - name: ""
+    email: ""
+    password: ""
+    authType: ""
+  #这里填你的mc账号信息，多个账号请复制粘贴增加，以下为示例
+  #- name: "thisisanaccount" 账号的档案名
+  #  email: "example@example.com" 账号的邮箱地址
+  #  password: "password" 这不用多说了吧
+  #  authType: "third" 这里的type有三种选择，microsoft，mojang和third，third是第三方皮肤站账号，如littleskin
+skin:
+  #这里填你的皮肤站服务器地址，多个地址请复制粘贴增加，以下为示例
+  #- url: "https://example.com/api/yggdrasil/"
+  #  authServer: "" 如果你的皮肤站的网站不是特殊的话可不填写
+  #  sessionServer: ""
+  - url: ""
+    authServer: ""
+    sessionServer: ""
