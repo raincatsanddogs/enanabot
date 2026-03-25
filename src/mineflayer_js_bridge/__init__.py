@@ -38,6 +38,7 @@ active_bot: Bot | None = None      # 保存当前的 Bot 实例
 active_event: Event | None = None  # 保存触发指令的事件上下文
 
 js_process = None
+
 @mc.handle()
 async def _(bot: Bot, event: Event, args: Message = CommandArg()):
     global js_process, active_bot, active_event

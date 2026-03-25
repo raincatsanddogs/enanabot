@@ -7,8 +7,8 @@ let config = {};
 
 try {
   // 1. 拼接正确的文件路径
-  const accountsPath = path.join(__dirname, '../../../../../../configs/accounts.yaml');
-  const settingsPath = path.join(__dirname, '../../../../../../configs/settings.yaml');
+  const accountsPath = path.join(__dirname, '../../../../../configs/accounts.yaml');
+  const settingsPath = path.join(__dirname, '../../../../../configs/settings.yaml');
   //
   // 2. 读取文件内容 (指定 utf8 编码)
   const accountsContents = fs.readFileSync(accountsPath, 'utf8');
