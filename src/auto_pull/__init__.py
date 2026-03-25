@@ -32,8 +32,10 @@ git = on_command("git", rule=to_me(), aliases={"git"}, priority=5, permission=SU
 async def _(args: Message = CommandArg()):
     sub_command = args.extract_plain_text().strip()
     if sub_command == "pull":
+        await git.send("pulling...")
+
         process = await asyncio.create_subprocess_shell(
-            "git pull",
+            'git -c url."https://gh-proxy.org/https://github.com/".insteadOf="https://github.com/" pull',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
