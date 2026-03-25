@@ -35,7 +35,11 @@ async def _(args: Message = CommandArg()):
         await git.send("pulling...")
 
         process = await asyncio.create_subprocess_shell(
-            'git -c url."https://gh-proxy.org/https://github.com/".insteadOf="https://github.com/" pull',
+            (
+                'git -c '
+                'url."https://gh-proxy.org/https://github.com/".insteadOf='
+                '"https://github.com/" pull'
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -58,13 +62,29 @@ async def _(args: Message = CommandArg()):
     elif not sub_command:
         await git.finish("你说得对，但是git是一款由Linus Torvalds开发的......")
     else:
-        await git.finish(f"干什么?!")
+        await git.finish("干什么?!")
 
 
-def restart_bot():
+def restart_bot() -> None:
     """
     重启机器人进程的方法
     """
 
     python = sys.executable
-    os.execv(python, [python] + sys.argv)
+    # 优先使用解释器原始参数，避免丢失 `-m`/`-c` 等启动上下文。
+    argv = list(getattr(sys, "orig_argv", []))
+    if argv:
+        argv[0] = python
+    else:
+        argv = [python, *sys.argv]
+
+    # 部分运行环境下可能出现孤立 `-c`，会导致 Python 直接报错退出。
+    if "-c" in argv:
+        c_index = argv.index("-c")
+        if c_index == len(argv) - 1:
+            logger.warning(
+                "检测到不完整的 -c 启动参数，回退到 `python -m nonebot` 重启"
+            )
+            argv = [python, "-m", "nonebot"]
+
+    os.execv(python, argv)
