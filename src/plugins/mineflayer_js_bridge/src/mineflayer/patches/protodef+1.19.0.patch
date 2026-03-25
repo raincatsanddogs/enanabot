@@ -1,0 +1,38 @@
+diff --git a/node_modules/protodef/src/datatypes/compiler-utils.js b/node_modules/protodef/src/datatypes/compiler-utils.js
+index 2c3d5a8..8845918 100644
+--- a/node_modules/protodef/src/datatypes/compiler-utils.js
++++ b/node_modules/protodef/src/datatypes/compiler-utils.js
+@@ -14,7 +14,32 @@ module.exports = {
+       code += 'if (offset + count > buffer.length) {\n'
+       code += '  throw new PartialReadError("Missing characters in string, found size is " + buffer.length + " expected size was " + (offset + count))\n'
+       code += '}\n'
+-      code += `return { value: buffer.toString("${string.encoding || 'utf8'}", offset, offset + count), size: count + countSize }`
++      code += `const __enc = "${string.encoding || 'utf8'}"\n`
++      code += 'const __start = offset\n'
++      code += 'const __end = offset + count\n'
++      code += 'let __value = buffer.toString(__enc, __start, __end)\n'
++      code += 'if ((__enc === "utf8" || __enc === "utf-8") && __value.includes("\\uFFFD")) {\n'
++      code += '  let __out = ""\n'
++      code += '  let __last = __start\n'
++      code += '  let __i = __start\n'
++      code += '  while (__i + 5 < __end) {\n'
++      code += '    if (buffer[__i] === 0xED && buffer[__i + 1] >= 0xA0 && buffer[__i + 1] <= 0xAF && buffer[__i + 2] >= 0x80 && buffer[__i + 2] <= 0xBF && buffer[__i + 3] === 0xED && buffer[__i + 4] >= 0xB0 && buffer[__i + 4] <= 0xBF && buffer[__i + 5] >= 0x80 && buffer[__i + 5] <= 0xBF) {\n'
++      code += '      if (__i > __last) __out += buffer.toString("utf8", __last, __i)\n'
++      code += '      const __high = ((buffer[__i] & 0x0F) << 12) | ((buffer[__i + 1] & 0x3F) << 6) | (buffer[__i + 2] & 0x3F)\n'
++      code += '      const __low = ((buffer[__i + 3] & 0x0F) << 12) | ((buffer[__i + 4] & 0x3F) << 6) | (buffer[__i + 5] & 0x3F)\n'
++      code += '      if (__high >= 0xD800 && __high <= 0xDBFF && __low >= 0xDC00 && __low <= 0xDFFF) {\n'
++      code += '        __out += String.fromCodePoint(((__high - 0xD800) << 10) + (__low - 0xDC00) + 0x10000)\n'
++      code += '        __i += 6\n'
++      code += '        __last = __i\n'
++      code += '        continue\n'
++      code += '      }\n'
++      code += '    }\n'
++      code += '    __i++\n'
++      code += '  }\n'
++      code += '  if (__last < __end) __out += buffer.toString("utf8", __last, __end)\n'
++      code += '  __value = __out\n'
++      code += '}\n'
++      code += 'return { value: __value, size: count + countSize }'
+       return compiler.wrapCode(code)
+     }],
+     buffer: ['parametrizable', (compiler, buffer) => {
