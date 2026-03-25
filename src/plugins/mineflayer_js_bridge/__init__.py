@@ -51,7 +51,7 @@ async def _(bot: Bot, event: Event, args: Message = CommandArg()):
         active_bot = bot
         active_event = event
         # 启动子进程，重定向输入输出
-        js_path = Path(__file__).parent / "src/mineflayer/index.js"
+        js_path = Path(__file__).parent / "src/index.js"
 
         js_process = await asyncio.create_subprocess_exec(
             "node", str(js_path),
