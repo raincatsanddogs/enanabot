@@ -11,4 +11,3 @@ pnpm-debug.log*
 Thumbs.db
 tests/
 raw_json_msgs/
-configs/

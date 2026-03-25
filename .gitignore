@@ -142,4 +142,4 @@ dmypy.json
 
 # idle
 .vscode/
-configs/
+/configs/
