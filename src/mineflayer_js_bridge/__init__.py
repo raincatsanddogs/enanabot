@@ -149,8 +149,8 @@ async def read_stderr(js_process):
 async def listen_to_js():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     # 拼接出 zh_cn.json 和 en_us.json 的绝对路径
-    zh_cn_path = os.path.join(current_dir, "../../../configs/zh_cn.json")
-    en_us_path = os.path.join(current_dir, "../../../configs/en_us.json")
+    zh_cn_path = os.path.join(current_dir, "../../configs/zh_cn.json")
+    en_us_path = os.path.join(current_dir, "../../configs/en_us.json")
     # 模块加载时，立即把数据读进内存
     _LANG_CACHE["zh_cn"] = _load_language_file(zh_cn_path)
     _LANG_CACHE["en_us"] = _load_language_file(en_us_path)
