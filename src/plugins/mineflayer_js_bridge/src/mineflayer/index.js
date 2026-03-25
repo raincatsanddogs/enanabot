@@ -75,7 +75,7 @@ async function main() {
             }
             console.info(JSON.stringify(post_const));
         } catch (e) {
-            console.error('Error processing message:', e);
+            console.error('Error processing message:', e?.jsonMsg || e);
             return;
         }   
     });

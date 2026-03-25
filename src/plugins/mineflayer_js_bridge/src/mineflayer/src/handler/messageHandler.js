@@ -1,4 +1,5 @@
 function handleMessage(jsonMsg) {
+    try {
     const time_stamp = new Date().toISOString();
     let type = undefined;
     const translate = jsonMsg.translate || undefined;
@@ -13,6 +14,14 @@ function handleMessage(jsonMsg) {
         translate:translate, 
         params:params
     }; 
+    } catch (e) {
+        
+        console.error('处理消息时发生错误:', e);
+        throw {
+            jsonMsg: jsonMsg,
+            error: e.toString()
+        };
+    }
 }
 
 /**
