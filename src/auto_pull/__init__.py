@@ -53,8 +53,15 @@ async def _(args: Message = CommandArg()):
 
         if process.returncode == 0:
             # 成功拉取代码
-            await git.send(f"更新成功:\n{output}\n正在重启进程...")
-
+            await git.send(f"{output}")
+            git_log_process = await asyncio.create_subprocess_shell(
+                'git log ORIG_HEAD..HEAD --pretty=format:"%h - %an : %s (%cr)"',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            log_stdout, _ = await git_log_process.communicate()
+            await git.send(f"{log_stdout.decode().strip()}")
+            await git.send("正在重启进程...")
             # 执行重启操作
             restart_bot()
         else:
