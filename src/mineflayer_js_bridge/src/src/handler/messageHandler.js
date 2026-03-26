@@ -106,10 +106,15 @@ function type_define(jsonMsg) {
 //
 function params_define(type,jsonMsg) {
     if (type === 'join' || type === 'left') {
-        const player_name = jsonMsg.json.with[0].hover_event.name;
-        const player_type = jsonMsg.json.with[0].hover_event.id;
-        const player_uuid = jsonMsg.json.with[0].hover_event.uuid;
-        return [entity_structure(player_type, player_name, player_uuid)];
+        if (jsonMsg.json.with?.[0]?.hasOwnProperty('hover_event')){
+            const player_name = jsonMsg.json.with[0].hover_event.name;
+            const player_type = jsonMsg.json.with[0].hover_event.id;
+            const player_uuid = jsonMsg.json.with[0].hover_event.uuid;
+            return [entity_structure(player_type, player_name, player_uuid)];
+        }else{
+            const player_name = jsonMsg.json.with[0];
+            return [entity_structure('non_vanilla_message_player', player_name, [0,0,0,0])];
+        }
     }
     if (type === 'whisper') {
         if (jsonMsg.translate === 'commands.message.display.incoming') {
