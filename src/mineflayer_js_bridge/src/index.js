@@ -86,7 +86,7 @@ async function main() {
 
     bot.on('end', (reason) => {
         console.warn(`Bot disconnected: ${reason}`);
-        process.exit(0);
+        process.exit(1);
     });
 }
 
