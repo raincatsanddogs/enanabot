@@ -139,12 +139,12 @@ function params_define(type,jsonMsg) {
         const player_type = jsonMsg.json.with[0].hover_event.id;
         const player_uuid = jsonMsg.json.with[0].hover_event.uuid;
         if (jsonMsg.json.with[1] && jsonMsg.json.with[1].hover_event) {
-            const killer_name = jsonMsg.json.with[1].hover_event.name?.translate || jsonMsg.json.with[1].hover_event.name;
+            const killer_name = jsonMsg.json.with[1].hover_event.name?.text || jsonMsg.json.with[1].hover_event.name?.translate || jsonMsg.json.with[1].hover_event.name;
             const killer_type = jsonMsg.json.with[1].hover_event.id;
             const killer_uuid = jsonMsg.json.with[1].hover_event.uuid;
             if (jsonMsg.json.with[2] && jsonMsg.json.with[2].hover_event) {
                 const item_type = jsonMsg.json.with[2].hover_event.id
-                const item_name = 'item.' + jsonMsg.json.with[2].hover_event.id.replaceAll(":", ".");
+                const item_name = extractCustomName(jsonMsg.json.with[2].hover_event.components) ?? ('item.' + jsonMsg.json.with[2].hover_event.id.replaceAll(":", "."));
                 const item_components = jsonMsg.json.with[2].hover_event.components;
                 return [entity_structure(player_type, player_name, player_uuid), entity_structure(killer_type, killer_name, killer_uuid),entity_structure(item_type,item_name,item_components)]
             }
@@ -157,6 +157,38 @@ function params_define(type,jsonMsg) {
         return [jsonMsg.json.extra[1].extra];
     }
     return [];
+}
+
+function extractCustomName(itemData) {
+    // 1. 安全地获取 custom_name 字段
+    const customName = itemData?.uuid?.['minecraft:custom_name'];
+    
+    // 如果没有自定义名称，返回 null
+    if (!customName) return null;
+
+    // 2. 形式二：如果直接是字符串，直接返回（如："经典红烧味杯面"）
+    if (typeof customName === 'string') {
+        return customName;
+    }
+
+    // 3. 形式一：如果是对象，说明是 JSON 文本组件（如："毒芽"）
+    if (typeof customName === 'object') {
+        // 获取基础文本（"毒"）
+        let result = customName.text || '';
+        
+        // 检查是否有额外的文本数组 extra
+        if (Array.isArray(customName.extra)) {
+        // 遍历 extra 数组，拼接入子文本（"芽"）
+        customName.extra.forEach(part => {
+            if (part && part.text) {
+            result += part.text;
+            }
+        });
+        }
+        return result;
+    }
+
+    return null;
 }
 
 function entity_structure(type, name, uuid) {
