@@ -161,7 +161,7 @@ function params_define(type,jsonMsg) {
 
 function extractCustomName(itemData) {
     // 1. 安全地获取 custom_name 字段
-    const customName = itemData?.uuid?.['minecraft:custom_name'];
+    const customName = itemData?.['minecraft:custom_name'];
     
     // 如果没有自定义名称，返回 null
     if (!customName) return null;

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +38,7 @@ active_event: Event | None = None  # 保存触发指令的事件上下文
 js_process: asyncio.subprocess.Process | None = None
 js_stop_requested = False
 js_stderr_lines: list[str] = []
+PENDING_BRIDGE_MESSAGES: deque[str] = deque(maxlen=50)
 
 RUNTIME_STATE_PATH = (
     Path(__file__).resolve().parents[2] / "configs" / "mineflayer_js_bridge.runtime.json"
@@ -156,10 +158,24 @@ async def _send_bridge_message(message: str) -> None:
     if not message:
         return
 
+    delivered = await _try_send_bridge_message(message)
+    if delivered:
+        return
+
+    PENDING_BRIDGE_MESSAGES.append(message)
+    logger.warning(
+        "桥接消息暂存：OneBot 尚未就绪或目标不可用，等待连接恢复后补发"
+    )
+
+
+async def _try_send_bridge_message(message: str) -> bool:
+    if not message:
+        return True
+
     if active_bot and active_event:
         try:
             await active_bot.send(active_event, message)
-            return
+            return True
         except Exception as error:
             logger.error(f"通过事件上下文发送消息失败: {error}")
 
@@ -169,22 +185,45 @@ async def _send_bridge_message(message: str) -> None:
     target_id = state.get("target_id")
 
     if not isinstance(bot_id, str) or target_type not in {"group", "private"}:
-        return
+        return False
     if not isinstance(target_id, int):
-        return
+        return False
 
     bot_instance = get_bots().get(bot_id)
     if bot_instance is None:
-        logger.warning(f"未找到可用 Bot 实例，无法转发消息: {bot_id}")
-        return
+        return False
 
     try:
         if target_type == "group":
             await bot_instance.call_api("send_group_msg", group_id=target_id, message=message)
         else:
             await bot_instance.call_api("send_private_msg", user_id=target_id, message=message)
+        return True
     except Exception as error:
         logger.error(f"发送桥接消息失败: {error}")
+        return False
+
+
+async def _flush_pending_bridge_messages() -> None:
+    if not PENDING_BRIDGE_MESSAGES:
+        return
+
+    pending = list(PENDING_BRIDGE_MESSAGES)
+    PENDING_BRIDGE_MESSAGES.clear()
+    sent_count = 0
+
+    for index, pending_message in enumerate(pending):
+        delivered = await _try_send_bridge_message(pending_message)
+        if delivered:
+            sent_count += 1
+            continue
+
+        for remaining_message in pending[index:]:
+            PENDING_BRIDGE_MESSAGES.append(remaining_message)
+        break
+
+    if sent_count > 0:
+        logger.info(f"已补发桥接消息 {sent_count} 条")
 
 
 async def _start_js_process(
@@ -275,11 +314,7 @@ async def _restore_js_process_on_startup() -> None:
     if not state["should_start"]:
         return
 
-    started, message = await _start_js_process(persist_state=False)
-    if started:
-        logger.info("已根据持久化状态自动恢复 JS 进程")
-    else:
-        logger.warning(f"根据持久化状态自动恢复 JS 进程失败: {message}")
+    logger.info("检测到自动恢复已开启，将在 OneBot 连接后启动 JS 进程")
 
 
 @driver.on_bot_connect
@@ -288,9 +323,26 @@ async def _restore_target_bot_on_connect(bot: Bot) -> None:
 
     state = _load_runtime_state()
     saved_bot_id = state.get("bot_id")
-    if isinstance(saved_bot_id, str) and saved_bot_id and str(bot.self_id) == saved_bot_id:
+    can_bind = (
+        not isinstance(saved_bot_id, str)
+        or not saved_bot_id
+        or str(bot.self_id) == saved_bot_id
+    )
+
+    if can_bind:
         active_bot = bot
-        logger.info(f"已恢复消息推送 Bot: {saved_bot_id}")
+        logger.info(f"已恢复消息推送 Bot: {bot.self_id}")
+
+        should_start = bool(state.get("should_start"))
+        is_running = js_process is not None and js_process.returncode is None
+        if should_start and not is_running:
+            started, message = await _start_js_process(persist_state=False)
+            if started:
+                logger.info("已在 OneBot 连接后自动恢复 JS 进程")
+            else:
+                logger.warning(f"OneBot 连接后自动恢复 JS 进程失败: {message}")
+
+        await _flush_pending_bridge_messages()
 
 
 @driver.on_shutdown
@@ -320,13 +372,15 @@ async def _(bot: Bot, event: Event, args: Message = CommandArg()):
         should_start_text = "开启" if state.get("should_start") else "关闭"
         bot_text = str(state.get("bot_id") or "未设置")
         target_text = _format_target(state)
+        pending_text = str(len(PENDING_BRIDGE_MESSAGES))
 
         await mc.finish(
             "MC Bridge 状态:\n"
             f"- JS 进程: {running_text}\n"
             f"- 重启后自动恢复: {should_start_text}\n"
             f"- 推送 Bot: {bot_text}\n"
-            f"- 推送目标: {target_text}"
+            f"- 推送目标: {target_text}\n"
+            f"- 待补发消息: {pending_text}"
         )
     else:
         await mc.finish("干什么?!")
