@@ -61,7 +61,7 @@ async def _(args: Message = CommandArg()):
             )
             log_stdout, _ = await git_log_process.communicate()
             await git.send(f"{log_stdout.decode().strip()}")
-            await git.send("正在重启进程...")
+            await git.send("正在重启······")
             # 执行重启操作
             restart_bot()
         else:

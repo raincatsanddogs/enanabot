@@ -43,8 +43,11 @@ nb run --reload
 
 插件位于 `src/plugins`，会由 `pyproject.toml` 中的 `tool.nonebot.plugin_dirs` 自动发现并加载。
 
-在群组中发送@bot /mc start 以加载互通
-发送@bot /mc stop 以结束
+在群组中发送@bot /mc start 以加载互通（会持久化为重启后自动恢复）
+发送@bot /mc stop 以结束（会关闭自动恢复并清空推送目标）
+发送@bot /mc status 可查看当前运行状态、自动恢复状态和推送目标
+
+运行状态文件：`configs/mineflayer_js_bridge.runtime.json`
 
 ## 文档
 
