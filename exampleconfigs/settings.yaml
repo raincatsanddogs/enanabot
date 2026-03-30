@@ -13,12 +13,12 @@ connect:
   #  retry: 3 连接重试次数，默认为3次
   #  host: "localhost" 连接的主机地址，默认为localhost
   #  port: xxxxx 连接的端口
-  #  ignore_group: [123456789] 这些群号的消息不会转发到 MC
+  #  send_group: [123456789] 仅这些群号的消息会转发到 MC（严格白名单，留空表示不转发）
   #  ignore_user: [10001] 这些用户的消息不会转发到 MC
   timeout: 10
   retry: 3
   host: "localhost"
   port: xxxxx
-  ignore_group: []
+  send_group: []
   ignore_user: []
   

@@ -24,14 +24,14 @@ npm install
 
 其中 `configs/settings.yaml` 新增桥接过滤项（位于 `connect` 下）：
 
-- `ignore_group`: 这些群号的消息不会转发到 MC
+- `send_group`: 仅这些群号的消息会转发到 MC（严格白名单，留空表示不转发）
 - `ignore_user`: 这些用户号的消息不会转发到 MC
 
 示例：
 
 ```yaml
 connect:
-  ignore_group: [123456789]
+  send_group: [123456789]
   ignore_user: [10001]
 ```
 

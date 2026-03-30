@@ -199,11 +199,20 @@ function entity_structure(type, name, uuid) {
     };
 }
 
-function group_msg_handler(jsonMsg,ignore_group,ignore_user) {
+function group_msg_handler(jsonMsg, send_group, ignore_user) {
     try {
-        if (ignore_group.includes(jsonMsg.group_id) || ignore_user.includes(jsonMsg.sender_id)){
+        const sendGroupList = Array.isArray(send_group) ? send_group : [];
+        const ignoreUserList = Array.isArray(ignore_user) ? ignore_user : [];
+
+        if (ignoreUserList.includes(jsonMsg.sender_id)) {
             return null;
         }
+
+        // Strict whitelist: only groups in send_group are allowed.
+        if (!sendGroupList.includes(jsonMsg.group_id)) {
+            return null;
+        }
+
         return jsonMsg.msg;
     }catch(e){
         throw new Error('error when handling group msg', jsonMsg, e);

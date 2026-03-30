@@ -79,7 +79,7 @@ function normalizeIncomingPayload(rawLine) {
 }
 
 function setupReadlineBridge(bot) {
-    const ignoreGroup = Array.isArray(config.ignore_group) ? config.ignore_group : [];
+    const sendGroup = Array.isArray(config.send_group) ? config.send_group : [];
     const ignoreUser = Array.isArray(config.ignore_user) ? config.ignore_user : [];
 
     const rl = readline.createInterface({
@@ -94,7 +94,7 @@ function setupReadlineBridge(bot) {
                 return;
             }
 
-            const msg = group_msg_handler(incoming, ignoreGroup, ignoreUser);
+            const msg = group_msg_handler(incoming, sendGroup, ignoreUser);
             if (typeof msg !== 'string' || msg.trim().length === 0) {
                 return;
             }

@@ -59,9 +59,11 @@ function normalizeIdList(listLike) {
   });
 }
 
-// Support both top-level and connect.* fields for backward compatibility.
-config.ignore_group = normalizeIdList(
-  config.ignore_group ?? connectConfig.ignore_group ?? connectConfig.ignoreGroup
+// send_group is the only accepted group whitelist field.
+config.send_group = normalizeIdList(
+  config.send_group
+  ?? connectConfig.send_group
+  ?? connectConfig.sendGroup
 );
 config.ignore_user = normalizeIdList(
   config.ignore_user ?? connectConfig.ignore_user ?? connectConfig.ignoreUser
