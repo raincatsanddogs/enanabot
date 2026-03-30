@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import nonebot
-from nonebot import get_bots, get_driver, get_plugin_config, logger, on_command
+from nonebot import get_bots, get_driver, get_plugin_config, logger, on_command, on_message
 from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import Bot, Event
 from nonebot.params import CommandArg
@@ -31,6 +31,7 @@ sub_plugins = nonebot.load_plugins(
 )
 
 mc = on_command("mc", rule=to_me(), aliases={"connect"}, priority=5, permission=SUPERUSER)
+bridge_input = on_message(priority=20, block=False)
 
 active_bot: Bot | None = None      # 保存当前的 Bot 实例
 active_event: Event | None = None  # 保存触发指令的事件上下文
@@ -152,6 +153,62 @@ def _format_target(state: dict[str, bool | str | int | None]) -> str:
     if target_type == "private" and isinstance(target_id, int):
         return f"私聊 {target_id}"
     return "未设置"
+
+
+def _event_matches_runtime_target(bot: Bot, event: Event) -> bool:
+    # 优先使用内存中的活跃上下文，避免每条消息都读取磁盘状态文件。
+    if active_bot and active_event:
+        if str(bot.self_id) != str(active_bot.self_id):
+            return False
+        active_target = _extract_target_from_event(active_bot, active_event)
+        if active_target:
+            target_type = active_target.get("target_type")
+            target_id = active_target.get("target_id")
+            group_id = getattr(event, "group_id", None)
+            user_id = getattr(event, "user_id", None)
+
+            if target_type == "group":
+                return isinstance(group_id, int) and group_id == target_id
+            if target_type == "private":
+                return (not isinstance(group_id, int)) and isinstance(user_id, int) and user_id == target_id
+
+    state = _load_runtime_state()
+    bot_id = state.get("bot_id")
+    target_type = state.get("target_type")
+    target_id = state.get("target_id")
+
+    if isinstance(bot_id, str) and bot_id and str(bot.self_id) != bot_id:
+        return False
+    if not isinstance(target_id, int):
+        return False
+
+    group_id = getattr(event, "group_id", None)
+    user_id = getattr(event, "user_id", None)
+
+    if target_type == "group":
+        return isinstance(group_id, int) and group_id == target_id
+    if target_type == "private":
+        return (not isinstance(group_id, int)) and isinstance(user_id, int) and user_id == target_id
+    return False
+
+
+async def _write_json_line_to_js(payload: dict[str, str]) -> bool:
+    process = js_process
+    if process is None or process.returncode is not None:
+        return False
+
+    if process.stdin is None:
+        logger.warning("JS stdin 不可用，无法写入桥接消息")
+        return False
+
+    try:
+        line = json.dumps(payload, ensure_ascii=False) + "\n"
+        process.stdin.write(line.encode("utf-8"))
+        await process.stdin.drain()
+        return True
+    except Exception as error:
+        logger.error(f"写入 JS stdin 失败: {error}")
+        return False
 
 
 async def _send_bridge_message(message: str) -> None:
@@ -384,6 +441,42 @@ async def _(bot: Bot, event: Event, args: Message = CommandArg()):
         )
     else:
         await mc.finish("干什么?!")
+
+
+@bridge_input.handle()
+async def _(bot: Bot, event: Event):
+    process = js_process
+    if process is None or process.returncode is not None:
+        return
+
+    if not _event_matches_runtime_target(bot, event):
+        return
+
+    sender_id = getattr(event, "user_id", None)
+    if sender_id is not None and str(sender_id) == str(bot.self_id):
+        return
+
+    plain_text = ""
+    if hasattr(event, "get_plaintext"):
+        plain_text = event.get_plaintext().strip()
+    if not plain_text:
+        return
+
+    if plain_text.startswith("/mc") or plain_text.startswith("/connect"):
+        return
+    if plain_text.startswith("[插件服]>>"):
+        return
+
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "group": str(getattr(event, "group_id", "") or ""),
+        "sender": str(sender_id or ""),
+        "msg": plain_text,
+    }
+
+    sent = await _write_json_line_to_js(payload)
+    if not sent:
+        logger.debug("本条消息未写入 JS stdin")
 
 # ==========================================
 # 2. 全局缓存 (核心思路)

@@ -22,6 +22,19 @@ npm install
 
 - `configs/`
 
+其中 `configs/settings.yaml` 新增桥接过滤项（位于 `connect` 下）：
+
+- `ignore_group`: 这些群号的消息不会转发到 MC
+- `ignore_user`: 这些用户号的消息不会转发到 MC
+
+示例：
+
+```yaml
+connect:
+  ignore_group: [123456789]
+  ignore_user: [10001]
+```
+
 你可以先复制示例配置：
 
 - `exampleconfigs/`
@@ -51,5 +64,5 @@ nb run --reload
 
 ## 文档
 
-- NoneBot 文档：https://nonebot.dev/
+- NoneBot 文档：[https://nonebot.dev/](https://nonebot.dev/)
 - 插件说明：`src/plugins/mineflayer_js_bridge/README.md`

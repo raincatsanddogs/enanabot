@@ -1,9 +1,10 @@
 //process.env.DEBUG = "minecraft-protocol"
 
 const mineflayer = require('mineflayer');
+const readline = require('node:readline');
 const config = require('./src/configs/config');
 const { resolveSrv } = require('./src/login/srv');
-const { handleMessage } = require('./src/handler/messageHandler');
+const { handleMessage, group_msg_handler } = require('./src/handler/messageHandler');
 
 const startArgs = process.argv.slice(2);
 try {
@@ -26,6 +27,89 @@ const profile = (startArgs[1] - 1) || 0;
 //debug
 //console.log(config.skin)
 
+function normalizeNumericId(rawId) {
+    if (typeof rawId === 'number') {
+        return rawId;
+    }
+
+    if (typeof rawId === 'string' && /^\d+$/.test(rawId)) {
+        return Number(rawId);
+    }
+
+    return rawId;
+}
+
+function normalizeIncomingPayload(rawLine) {
+    const line = rawLine.trim();
+    if (!line) {
+        return null;
+    }
+
+    // Keep backward compatibility: non-JSON line is treated as direct chat text.
+    if (!line.startsWith('{')) {
+        return { msg: line };
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(line);
+    } catch (error) {
+        throw new Error(`stdin 不是有效 JSON: ${error.message}`);
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+        throw new Error('stdin 消息必须是 JSON 对象');
+    }
+
+    if (typeof parsed.msg !== 'string') {
+        throw new Error('stdin 消息缺少字符串字段 msg');
+    }
+
+    const normalized = {
+        msg: parsed.msg.trim(),
+        group_id: normalizeNumericId(parsed.group_id ?? parsed.group ?? parsed.groupId),
+        sender_id: normalizeNumericId(parsed.sender_id ?? parsed.sender ?? parsed.senderId),
+    };
+
+    if (!normalized.msg) {
+        return null;
+    }
+
+    return normalized;
+}
+
+function setupReadlineBridge(bot) {
+    const ignoreGroup = Array.isArray(config.ignore_group) ? config.ignore_group : [];
+    const ignoreUser = Array.isArray(config.ignore_user) ? config.ignore_user : [];
+
+    const rl = readline.createInterface({
+        input: process.stdin,
+        crlfDelay: Infinity,
+    });
+
+    rl.on('line', (line) => {
+        try {
+            const incoming = normalizeIncomingPayload(line);
+            if (!incoming) {
+                return;
+            }
+
+            const msg = group_msg_handler(incoming, ignoreGroup, ignoreUser);
+            if (typeof msg !== 'string' || msg.trim().length === 0) {
+                return;
+            }
+
+            bot.chat(msg.trim());
+        } catch (error) {
+            console.error(`处理 stdin 消息失败: ${error.message || error}`);
+        }
+    });
+
+    rl.on('close', () => {
+        console.warn('stdin 已关闭，readline 停止监听');
+    });
+}
+
 async function main() {
 
     const srvHost = await resolveSrv(config.server[profile].url);
@@ -47,6 +131,8 @@ async function main() {
         authServer: config.skin[profile].authServer,
         sessionServer: config.skin[profile].sessionServer,
     });
+
+    setupReadlineBridge(bot);
 
     //唉，资源包
     bot._client.on('add_resource_pack', (packet) => {

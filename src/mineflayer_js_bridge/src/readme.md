@@ -43,6 +43,17 @@ node index.js
 }
 ```
 
+## console 消息输入参考格式
+
+```json
+{
+  "timestamp":"time",
+  "group":"",
+  "sender":"",
+  "msg":""
+}
+```
+
 ## todo
 
 - v1

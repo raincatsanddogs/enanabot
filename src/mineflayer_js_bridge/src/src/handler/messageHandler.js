@@ -199,4 +199,15 @@ function entity_structure(type, name, uuid) {
     };
 }
 
-module.exports = { handleMessage };
+function group_msg_handler(jsonMsg,ignore_group,ignore_user) {
+    try {
+        if (ignore_group.includes(jsonMsg.group_id) || ignore_user.includes(jsonMsg.sender_id)){
+            return null;
+        }
+        return jsonMsg.msg;
+    }catch(e){
+        throw new Error('error when handling group msg', jsonMsg, e);
+    }
+}
+
+module.exports = { handleMessage, group_msg_handler };

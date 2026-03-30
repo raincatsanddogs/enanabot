@@ -4,6 +4,8 @@ const yaml = require('js-yaml');
 const path = require('path');
 
 let config = {};
+let accounts = {};
+let settings = {};
 
 try {
   // 1. 拼接正确的文件路径
@@ -24,18 +26,46 @@ try {
 
 config = {...accounts, ...settings};
 
-config.skin.forEach(server => {
+if (Array.isArray(config.skin)) {
+  config.skin.forEach(server => {
 
     server.sessionServer = server.sessionServer || server.url + '/sessionserver';
     server.authServer = server.authServer || server.url + '/authserver';
 
-});
+  });
+}
 
-config.account.forEach(account => {
+if (Array.isArray(config.account)) {
+  config.account.forEach(account => {
 
     account.authType = account.authType === 'third' ? 'mojang' : account.authType;
 
-});
+  });
+}
+
+const connectConfig =
+  config.connect && typeof config.connect === 'object' ? config.connect : {};
+
+function normalizeIdList(listLike) {
+  if (!Array.isArray(listLike)) {
+    return [];
+  }
+
+  return listLike.map((item) => {
+    if (typeof item === 'string' && /^\d+$/.test(item)) {
+      return Number(item);
+    }
+    return item;
+  });
+}
+
+// Support both top-level and connect.* fields for backward compatibility.
+config.ignore_group = normalizeIdList(
+  config.ignore_group ?? connectConfig.ignore_group ?? connectConfig.ignoreGroup
+);
+config.ignore_user = normalizeIdList(
+  config.ignore_user ?? connectConfig.ignore_user ?? connectConfig.ignoreUser
+);
 
 // 4. 导出对象
 module.exports = config;
