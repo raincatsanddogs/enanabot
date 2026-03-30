@@ -26,6 +26,7 @@ npm install
 
 - `send_group`: 仅这些群号的消息会转发到 MC（严格白名单，留空表示不转发）
 - `ignore_user`: 这些用户号的消息不会转发到 MC
+- `forward_prefix`: 发往 MC 的桥接消息前缀（用于回环过滤）
 
 示例：
 
@@ -33,6 +34,7 @@ npm install
 connect:
   send_group: [123456789]
   ignore_user: [10001]
+  forward_prefix: "[群聊]>>"
 ```
 
 你可以先复制示例配置：
@@ -59,6 +61,8 @@ nb run --reload
 在群组中发送@bot /mc start 以加载互通（会持久化为重启后自动恢复）
 发送@bot /mc stop 以结束（会关闭自动恢复并清空推送目标）
 发送@bot /mc status 可查看当前运行状态、自动恢复状态和推送目标
+
+为避免回环，JS bot 向 MC 发送桥接消息时会自动添加 `forward_prefix` 指定的前缀，并在 `messageHandler` 解析阶段通过正则过滤该前缀消息，防止再次回传到 QQ。
 
 运行状态文件：`configs/mineflayer_js_bridge.runtime.json`
 

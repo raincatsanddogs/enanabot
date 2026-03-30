@@ -1,4 +1,17 @@
-function handleMessage(jsonMsg) {
+const DEFAULT_FORWARD_PREFIX = '[群聊]>>';
+
+function escapeRegex(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildForwardPrefixRegex(prefix) {
+    const normalized = (typeof prefix === 'string' && prefix.trim())
+        ? prefix.trim()
+        : DEFAULT_FORWARD_PREFIX;
+    return new RegExp(`${escapeRegex(normalized)}\\s*`);
+}
+
+function handleMessage(jsonMsg, options = {}) {
     try {
     const time_stamp = new Date().toISOString();
     let type = undefined;
@@ -7,6 +20,13 @@ function handleMessage(jsonMsg) {
     let params = [];
     type = type_define(jsonMsg);
     params = params_define(type,jsonMsg); 
+    const forwardPrefixRegex = buildForwardPrefixRegex(options.forwardPrefix);
+
+    // 过滤由桥接发送后被服务器回显的消息，避免 QQ->MC->QQ 回环。
+    if (type === 'chat' && typeof text === 'string' && forwardPrefixRegex.test(text)) {
+        return null;
+    }
+
     return {
         time_stamp:time_stamp,
         type:type, 

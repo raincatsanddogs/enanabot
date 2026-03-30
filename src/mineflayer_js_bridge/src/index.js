@@ -6,6 +6,10 @@ const config = require('./src/configs/config');
 const { resolveSrv } = require('./src/login/srv');
 const { handleMessage, group_msg_handler } = require('./src/handler/messageHandler');
 
+const QQ_FORWARD_PREFIX = (typeof config.forward_prefix === 'string' && config.forward_prefix.trim())
+    ? config.forward_prefix.trim()
+    : '[群聊]>>';
+
 const startArgs = process.argv.slice(2);
 try {
     if (startArgs.length == 0){
@@ -78,6 +82,19 @@ function normalizeIncomingPayload(rawLine) {
     return normalized;
 }
 
+function buildForwardMessage(message) {
+    const normalized = (message || '').trim();
+    if (!normalized) {
+        return '';
+    }
+
+    if (normalized.startsWith(QQ_FORWARD_PREFIX)) {
+        return normalized;
+    }
+
+    return `${QQ_FORWARD_PREFIX} ${normalized}`;
+}
+
 function setupReadlineBridge(bot) {
     const sendGroup = Array.isArray(config.send_group) ? config.send_group : [];
     const ignoreUser = Array.isArray(config.ignore_user) ? config.ignore_user : [];
@@ -99,7 +116,12 @@ function setupReadlineBridge(bot) {
                 return;
             }
 
-            bot.chat(msg.trim());
+            const outgoingText = buildForwardMessage(msg);
+            if (!outgoingText) {
+                return;
+            }
+
+            bot.chat(outgoingText);
         } catch (error) {
             console.error(`处理 stdin 消息失败: ${error.message || error}`);
         }
@@ -154,7 +176,11 @@ async function main() {
     bot.on('message', jsonMsg => {
         try {
             console.log('Received message');
-            const post_msg = handleMessage(jsonMsg);
+            const post_msg = handleMessage(jsonMsg, { forwardPrefix: QQ_FORWARD_PREFIX });
+            if (!post_msg) {
+                return;
+            }
+
             const post_const = {
                 timestamp : Date.now(),
                 msg : post_msg

@@ -68,6 +68,12 @@ config.send_group = normalizeIdList(
 config.ignore_user = normalizeIdList(
   config.ignore_user ?? connectConfig.ignore_user ?? connectConfig.ignoreUser
 );
+config.forward_prefix = (
+  config.forward_prefix
+  ?? connectConfig.forward_prefix
+  ?? connectConfig.forwardPrefix
+  ?? '[群聊]>>'
+).toString().trim() || '[群聊]>>';
 
 // 4. 导出对象
 module.exports = config;
