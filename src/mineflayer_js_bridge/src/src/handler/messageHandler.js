@@ -150,7 +150,7 @@ function params_define(type,jsonMsg) {
         //    if (msg_extras[i][''] === ' '){
         //        break;
         //    }
-        }
+        //}
         return [entity_structure('non_vanilla_message_player', '', [0,0,0,0])];//连名字都可能不正确怎么会有entity名和uuid呢（
     }
 
