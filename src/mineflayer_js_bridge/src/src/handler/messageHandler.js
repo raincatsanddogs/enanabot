@@ -144,14 +144,14 @@ function params_define(type,jsonMsg) {
             return [entity_structure(sender_type, sender_name, sender_uuid)];
         }//此为原版格式的处理方法
         //const msg_extras = jsonMsg.json.extra[0]//?.extra;//为什么原版和非原版表现形式完全不同，崎宵了
-        let name = '';
-        for (let i=1; i<msg_extras.length;i++){
-            name += msg_extras[i].text;
-            if (msg_extras[i][''] === ' '){
-                break;
-            }
+        //let name = '';
+        //for (let i=1; i<msg_extras.length;i++){
+        //    name += msg_extras[i].text;
+        //    if (msg_extras[i][''] === ' '){
+        //        break;
+        //    }
         }
-        return [entity_structure('non_vanilla_message_player', name, [0,0,0,0])];//连名字都可能不正确怎么会有entity名和uuid呢（
+        return [entity_structure('non_vanilla_message_player', '', [0,0,0,0])];//连名字都可能不正确怎么会有entity名和uuid呢（
     }
 
     if (type === 'kill') {
