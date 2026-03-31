@@ -143,7 +143,7 @@ function params_define(type,jsonMsg) {
             const sender_uuid = jsonMsg.json.with[0].hover_event.uuid;
             return [entity_structure(sender_type, sender_name, sender_uuid)];
         }//此为原版格式的处理方法
-        const msg_extras = jsonMsg.json.extra[0].extra;//为什么原版和非原版表现形式完全不同，崎宵了
+        const msg_extras = jsonMsg.json.extra[0]?.extra;//为什么原版和非原版表现形式完全不同，崎宵了
         let name = '';
         for (let i=1; i<msg_extras.length;i++){
             name += msg_extras[i].text;
