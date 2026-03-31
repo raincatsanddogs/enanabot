@@ -32,6 +32,7 @@ sub_plugins = nonebot.load_plugins(
 
 mc = on_command("mc", rule=to_me(), aliases={"connect"}, priority=5, permission=SUPERUSER)
 bridge_input = on_message(priority=20, block=False)
+JS_START_DELAY_SECONDS = 1
 
 active_bot: Bot | None = None      # 保存当前的 Bot 实例
 active_event: Event | None = None  # 保存触发指令的事件上下文
@@ -310,6 +311,10 @@ async def _start_js_process(
     js_stop_requested = False
     js_stderr_lines = []
     js_path = Path(__file__).parent / "src/index.js"
+
+    if JS_START_DELAY_SECONDS > 0:
+        logger.info(f"将在 {JS_START_DELAY_SECONDS} 秒后启动 JS 进程")
+        await asyncio.sleep(JS_START_DELAY_SECONDS)
 
     try:
         js_process = await asyncio.create_subprocess_exec(
