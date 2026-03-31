@@ -510,6 +510,8 @@ async def read_stdout(process: asyncio.subprocess.Process):
             logger.info(f"收到来自 JS 的对象: {data}")
             received_msg = data["msg"]
             output = ""
+            if received_msg["type"] == "whisper":
+                continue
             if translate:=received_msg.get("translate"):
                 #if "multiplayer.player" in translate:
                     # status = "加入" if (received_msg["type"] == "join") else "离开"
