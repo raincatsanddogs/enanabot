@@ -29,6 +29,39 @@ sub_plugins = nonebot.load_plugins(
 
 git = on_command("git", rule=to_me(), aliases={"git"}, priority=5, permission=SUPERUSER)
 
+
+async def _stop_bridge_process_before_restart() -> None:
+
+    bridge_module = (
+        sys.modules.get("mineflayer_js_bridge")
+        or sys.modules.get("src.mineflayer_js_bridge")
+    )
+    if bridge_module is None:
+        for module_name, module in sys.modules.items():
+            if module_name.endswith("mineflayer_js_bridge"):
+                bridge_module = module
+                break
+
+    if bridge_module is None:
+        return
+
+    stop_func = getattr(bridge_module, "_stop_js_process", None)
+    process = getattr(bridge_module, "js_process", None)
+    if not callable(stop_func) or process is None:
+        return
+
+    if getattr(process, "returncode", None) is not None:
+        return
+
+    try:
+        stopped, message = await stop_func(persist_state=False)
+        if stopped:
+            logger.info("重启前已停止 mineflayer_js_bridge 的 JS 子进程")
+        else:
+            logger.warning(f"重启前停止 JS 子进程返回: {message}")
+    except Exception as error:
+        logger.exception(f"重启前停止 JS 子进程失败: {error}")
+
 @git.handle()
 async def _(args: Message = CommandArg()):
     sub_command = args.extract_plain_text().strip()
@@ -62,6 +95,7 @@ async def _(args: Message = CommandArg()):
             log_stdout, _ = await git_log_process.communicate()
             await git.send(f"{log_stdout.decode().strip()}")
             await git.send("正在重启······")
+            await _stop_bridge_process_before_restart()
             # 执行重启操作
             restart_bot()
         else:
