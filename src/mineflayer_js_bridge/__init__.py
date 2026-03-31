@@ -52,6 +52,172 @@ RUNTIME_STATE_DEFAULT: dict[str, bool | str | int | None] = {
     "target_id": None,
 }
 
+# ===== 统一 IPC 协议常量 =====
+# Py → JS
+IPC_ACTION_QQ_MESSAGE = "qq_message"
+IPC_ACTION_WHISPER_REPLY = "whisper_reply"
+# JS → Py
+IPC_ACTION_MC_MESSAGE = "mc_message"
+IPC_ACTION_WHISPER_COMMAND = "whisper_command"
+
+
+def _ipc_encode(action: str, data: dict[str, object]) -> str:
+    """编码一条统一 IPC 消息为 JSON 行。"""
+    envelope = {
+        "action": action,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": data,
+    }
+    return json.dumps(envelope, ensure_ascii=False) + "\n"
+
+
+def _ipc_decode(line: str) -> dict[str, object] | None:
+    """解码一行 JSON 为 IPC envelope，返回 None 表示不是有效 IPC 消息。"""
+    trimmed = line.strip()
+    if not trimmed:
+        return None
+
+    try:
+        parsed = json.loads(trimmed)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+    if "action" not in parsed:
+        return None
+
+    return {
+        "action": parsed["action"],
+        "timestamp": parsed.get("timestamp", ""),
+        "data": parsed.get("data", {}),
+    }
+
+
+# ===== 指令权限定义 =====
+# admin: 可执行所有指令
+# user: 仅可执行此列表中的指令
+USER_ALLOWED_COMMANDS: set[str] = {"mc status"}
+
+
+# ===== 统一指令调度器 =====
+async def dispatch_command(
+    command: str,
+    args: list[str],
+    permission_level: str,
+) -> str:
+    """
+    统一指令入口。QQ 群指令和 MC whisper 指令共用此函数。
+
+    返回值为指令执行结果的文本。
+    """
+    full_command = command
+    if args:
+        full_command = f"{command} {' '.join(args)}"
+
+    # 权限检查
+    if permission_level == "user" and full_command not in USER_ALLOWED_COMMANDS:
+        return f"权限不足：{full_command}"
+
+    # mc 指令
+    if command == "mc":
+        return await _dispatch_mc_command(args)
+
+    # git 指令
+    if command == "git":
+        return await _dispatch_git_command(args)
+
+    return f"未知指令：{command}"
+
+
+async def _dispatch_mc_command(args: list[str]) -> str:
+    """处理 mc 子指令。"""
+    if not args:
+        return "干什么?!"
+
+    sub = args[0]
+
+    if sub == "start":
+        _, message = await _start_js_process(persist_state=True)
+        return message
+
+    if sub == "stop":
+        _, message = await _stop_js_process(persist_state=True)
+        return message
+
+    if sub == "status":
+        state = _load_runtime_state()
+        running = js_process is not None and js_process.returncode is None
+        running_text = "运行中" if running else "未运行"
+        should_start_text = "开启" if state.get("should_start") else "关闭"
+        bot_text = str(state.get("bot_id") or "未设置")
+        target_text = _format_target(state)
+        pending_text = str(len(PENDING_BRIDGE_MESSAGES))
+
+        return (
+            "MC Bridge 状态：\n"
+            f"- JS 进程: {running_text}\n"
+            f"- 重启后自动恢复: {should_start_text}\n"
+            f"- 推送 Bot: {bot_text}\n"
+            f"- 推送目标: {target_text}\n"
+            f"- 待补发消息: {pending_text}"
+        )
+
+    return "干什么?!"
+
+
+async def _dispatch_git_command(args: list[str]) -> str:
+    """处理 git 子指令。复用 auto_pull 的核心逻辑。"""
+    if not args:
+        return "你说得对，但是git是一款由Linus Torvalds开发的......"
+
+    sub = args[0]
+
+    if sub == "pull":
+        return await _execute_git_pull()
+
+    return "干什么?!"
+
+
+async def _execute_git_pull() -> str:
+    """执行 git pull 并返回格式化结果。当从 whisper 调用时不触发重启。"""
+    import sys
+
+    process = await asyncio.create_subprocess_shell(
+        (
+            'git -c '
+            'url."https://gh-proxy.org/https://github.com/".insteadOf='
+            '"https://github.com/" pull'
+        ),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    stdout, stderr = await process.communicate()
+
+    output = stdout.decode().strip() if stdout else ""
+    err_output = stderr.decode().strip() if stderr else ""
+
+    if process.returncode != 0:
+        return f"更新失败 (错误码 {process.returncode})：\n{err_output}"
+
+    # 获取 commit 日志
+    git_log_process = await asyncio.create_subprocess_shell(
+        'git log ORIG_HEAD..HEAD --pretty=format:"%h - %an : %s (%cr)"',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    log_stdout, _ = await git_log_process.communicate()
+    log_text = log_stdout.decode().strip() if log_stdout else ""
+
+    result_parts = [output]
+    if log_text:
+        result_parts.append(log_text)
+
+    return "\n".join(result_parts)
+
+
+# ===== 持久化状态管理 =====
 
 def _load_runtime_state() -> dict[str, bool | str | int | None]:
     state: dict[str, bool | str | int | None] = dict(RUNTIME_STATE_DEFAULT)
@@ -193,23 +359,34 @@ def _event_matches_runtime_target(bot: Bot, event: Event) -> bool:
     return False
 
 
-async def _write_json_line_to_js(payload: dict[str, str]) -> bool:
+# ===== IPC 通信 =====
+
+async def _write_ipc_to_js(action: str, data: dict[str, object]) -> bool:
+    """通过统一 IPC 格式向 JS 进程发送消息。"""
     process = js_process
     if process is None or process.returncode is not None:
         return False
 
     if process.stdin is None:
-        logger.warning("JS stdin 不可用，无法写入桥接消息")
+        logger.warning("JS stdin 不可用，无法写入 IPC 消息")
         return False
 
     try:
-        line = json.dumps(payload, ensure_ascii=False) + "\n"
+        line = _ipc_encode(action, data)
         process.stdin.write(line.encode("utf-8"))
         await process.stdin.drain()
         return True
     except Exception as error:
         logger.error(f"写入 JS stdin 失败: {error}")
         return False
+
+
+async def _send_whisper_reply(player_name: str, message: str) -> bool:
+    """通过 IPC 向 JS 发送 whisper 回复。"""
+    return await _write_ipc_to_js(IPC_ACTION_WHISPER_REPLY, {
+        "target_player": player_name,
+        "msg": message,
+    })
 
 
 async def _send_bridge_message(message: str) -> None:
@@ -283,6 +460,8 @@ async def _flush_pending_bridge_messages() -> None:
     if sent_count > 0:
         logger.info(f"已补发桥接消息 {sent_count} 条")
 
+
+# ===== JS 进程管理 =====
 
 async def _start_js_process(
     bot: Bot | None = None,
@@ -415,6 +594,9 @@ async def _stop_js_process_on_shutdown() -> None:
     logger.info("Bot 正在关闭，停止 JS 子进程")
     await _stop_js_process(persist_state=False)
 
+
+# ===== NoneBot 指令处理器（QQ 端）=====
+
 @mc.handle()
 async def _(bot: Bot, event: Event, args: Message = CommandArg()):
     start = args.extract_plain_text().strip()
@@ -428,22 +610,9 @@ async def _(bot: Bot, event: Event, args: Message = CommandArg()):
         await mc.finish(message)
 
     elif start == "status":
-        state = _load_runtime_state()
-        running = js_process is not None and js_process.returncode is None
-        running_text = "运行中" if running else "未运行"
-        should_start_text = "开启" if state.get("should_start") else "关闭"
-        bot_text = str(state.get("bot_id") or "未设置")
-        target_text = _format_target(state)
-        pending_text = str(len(PENDING_BRIDGE_MESSAGES))
+        result = await dispatch_command("mc", ["status"], "admin")
+        await mc.finish(result)
 
-        await mc.finish(
-            "MC Bridge 状态:\n"
-            f"- JS 进程: {running_text}\n"
-            f"- 重启后自动恢复: {should_start_text}\n"
-            f"- 推送 Bot: {bot_text}\n"
-            f"- 推送目标: {target_text}\n"
-            f"- 待补发消息: {pending_text}"
-        )
     else:
         await mc.finish("干什么?!")
 
@@ -472,82 +641,131 @@ async def _(bot: Bot, event: Event):
     if plain_text.startswith("[插件服]>>"):
         return
 
-    payload = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "group": str(getattr(event, "group_id", "") or ""),
-        "sender": str(sender_id or ""),
+    # 统一 IPC 格式
+    sent = await _write_ipc_to_js(IPC_ACTION_QQ_MESSAGE, {
+        "group_id": getattr(event, "group_id", None) or "",
+        "sender_id": str(sender_id or ""),
         "msg": plain_text,
-    }
-
-    sent = await _write_json_line_to_js(payload)
+    })
     if not sent:
         logger.debug("本条消息未写入 JS stdin")
 
+
 # ==========================================
-# 2. 全局缓存 (核心思路)
+# 全局缓存 (核心思路)
 # ==========================================
-# 这个字典会常驻内存，后续所有的翻译请求都直接从这里读取，不再碰硬盘
 _LANG_CACHE = {
     "zh_cn": {},
     "en_us": {}
 }
 
-# ==========================================
-# 3. 初始化加载 (只在模块被首次 import 时运行一次)
-# ==========================================
+
 def _load_language_file(file_path):
     """内部函数：读取 JSON 文件"""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"警告：无法加载语言文件 '{file_path}'。原因: {e}")
+        logger.warning(f"警告：无法加载语言文件 '{file_path}'。原因: {e}")
         return {}
 
-# 任务 1：只负责监听标准输出 (正常日志和 JSON 数据)
+
+# ===== JS stdout/stderr 监听 =====
+
 async def read_stdout(process: asyncio.subprocess.Process):
+    """监听 JS stdout，解析统一 IPC 消息并分发处理。"""
     while process.returncode is None:
         line = await process.stdout.readline()
         if not line:
             break
         try:
-            data = json.loads(line.decode())
-            logger.info(f"收到来自 JS 的对象: {data}")
-            received_msg = data["msg"]
-            output = ""
-            if received_msg["type"] == "whisper":
+            decoded_line = line.decode().strip()
+            if not decoded_line:
                 continue
-            if translate:=received_msg.get("translate"):
-                #if "multiplayer.player" in translate:
-                    # status = "加入" if (received_msg["type"] == "join") else "离开"
-                    # output = f"{received_msg['params'][0]['name']} {status}了游戏"
-                #if "death" in translate:
-                match len(received_msg["params"]):
-                    case 1:
-                        output = translate_mc_key(translate,"zh_cn",received_msg['params'][0]['name'])
-                        #f"{received_msg['params'][0]['name']} 死了"
-                    case 2:
-                        output = translate_mc_key(translate,"zh_cn",received_msg['params'][0]['name'], 
-                                                                    received_msg['params'][1]['name'])
-                        #f"{received_msg['params'][0]['name']} 被 {received_msg['params'][1]['name']} 杀死了"
-                    case 3:
-                        output = translate_mc_key(translate,"zh_cn",received_msg['params'][0]['name'], 
-                                                                    received_msg['params'][1]['name'], 
-                                                                    received_msg['params'][2]['name'])
-                        #f"{received_msg['params'][0]['name']} 被 {received_msg['params'][1]['name']} 用 {received_msg['params'][2]['name']} 杀死了"
-            elif received_msg["type"] == "chat":
-                output = f"{received_msg['text']}"
+
+            envelope = _ipc_decode(decoded_line)
+            if envelope is None:
+                # 非 IPC 格式的普通输出
+                logger.debug(f"JS 普通输出: {decoded_line}")
+                continue
+
+            action = envelope["action"]
+            data = envelope.get("data", {})
+
+            if action == IPC_ACTION_MC_MESSAGE:
+                await _handle_mc_message(data)
+
+            elif action == IPC_ACTION_WHISPER_COMMAND:
+                await _handle_whisper_command(data)
+
             else:
-                continue
-            # 统一走发送函数，支持 event 上下文和持久化目标两种转发方式。
-            if output:
-                await _send_bridge_message(f"[插件服]>>{output}")
-        except json.JSONDecodeError:
-            logger.debug(f"JS 普通输出: {line.decode().strip()}")
+                logger.warning(f"JS 发来未知 IPC action: {action}")
+
         except Exception as e:
             logger.error(f"解析 JS 数据失败: {e}")
 
-# 任务 2：只负责监听错误输出
+
+async def _handle_mc_message(received_msg: dict[str, object]) -> None:
+    """处理来自 JS 的 mc_message：翻译并转发到 QQ。"""
+    output = ""
+
+    if received_msg.get("type") == "whisper":
+        # whisper 已在 JS 端处理，不转发到 QQ
+        return
+
+    translate = received_msg.get("translate")
+    if translate:
+        params = received_msg.get("params", [])
+        match len(params):
+            case 1:
+                output = translate_mc_key(
+                    translate, "zh_cn",
+                    params[0]["name"] if isinstance(params[0], dict) else str(params[0]),
+                )
+            case 2:
+                output = translate_mc_key(
+                    translate, "zh_cn",
+                    params[0]["name"] if isinstance(params[0], dict) else str(params[0]),
+                    params[1]["name"] if isinstance(params[1], dict) else str(params[1]),
+                )
+            case 3:
+                output = translate_mc_key(
+                    translate, "zh_cn",
+                    params[0]["name"] if isinstance(params[0], dict) else str(params[0]),
+                    params[1]["name"] if isinstance(params[1], dict) else str(params[1]),
+                    params[2]["name"] if isinstance(params[2], dict) else str(params[2]),
+                )
+    elif received_msg.get("type") == "chat":
+        output = f"{received_msg.get('text', '')}"
+    else:
+        return
+
+    if output:
+        await _send_bridge_message(f"[插件服]>>{output}")
+
+
+async def _handle_whisper_command(data: dict[str, object]) -> None:
+    """处理来自 JS 的 whisper_command：执行指令并 whisper 回复。"""
+    player_name = data.get("player_name", "")
+    command = data.get("command", "")
+    args = data.get("args", [])
+    permission_level = data.get("permission_level", "user")
+
+    if not player_name or not command:
+        return
+
+    logger.info(f"MC whisper 指令: [{permission_level}] {player_name} -> {command} {args}")
+
+    try:
+        result = await dispatch_command(command, args, permission_level)
+    except Exception as e:
+        result = f"指令执行失败：{e}"
+        logger.error(f"whisper 指令执行异常: {e}")
+
+    # 通过 MC whisper 回复
+    await _send_whisper_reply(player_name, result)
+
+
 async def read_stderr(process: asyncio.subprocess.Process):
     global js_stderr_lines
     while process.returncode is None:
@@ -574,12 +792,12 @@ async def listen_to_js():
     # 模块加载时，立即把数据读进内存
     _LANG_CACHE["zh_cn"] = _load_language_file(zh_cn_path)
     _LANG_CACHE["en_us"] = _load_language_file(en_us_path)
-    logger.info("✅ MC 语言包已成功加载到内存！") # 你可以在控制台看到这句话只打印了一次
+    logger.info("✅ MC 语言包已成功加载到内存！")
 
     await asyncio.gather(
         read_stdout(process),
         read_stderr(process),
-        return_exceptions=True # 加上这个参数，防止其中一个循环崩溃导致另一个也被强制关掉
+        return_exceptions=True
     )
 
     await process.wait()
@@ -590,49 +808,25 @@ async def listen_to_js():
         err_summary = "\n".join(js_stderr_lines).strip()
         if not err_summary:
             err_summary = "(无 stderr 输出)"
-        alert = f"[插件服] JS 进程异常退出，退出码: {return_code}\n最近错误输出:\n{err_summary}"
+        alert = f"[插件服] JS 进程异常退出，退出码: {return_code}\n最近错误输出：\n{err_summary}"
 
         await _send_bridge_message(alert)
 
     js_stop_requested = False
     if js_process is process:
         js_process = None
-# 将键名翻译为文本，generated by 哈gemi
-def load_language_file(file_path):
-    """
-    加载本地的 Minecraft .json 语言文件。
-    
-    参数:
-        file_path (str): 本地 json 文件的路径
-    返回:
-        dict: 包含键值对的语言字典
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print(f"错误：找不到文件 '{file_path}'。请确保文件路径正确。")
-        return {}
-    except json.JSONDecodeError:
-        print(f"错误：'{file_path}' 不是有效的 JSON 格式。")
-        return {}
+
+
+# ===== MC 翻译 =====
 
 def translate_mc_key(key, lang="zh_cn", *args):
     """
     根据语言字典翻译键名，并替换其中的占位符。
-
-    参数:
-        lang_data (dict): 由 load_language_file 返回的语言字典
-        key (str): 需要翻译的键名 (例如 "death.attack.fall")
-        *args: 用于替换占位符的动态参数
-    返回:
-        str: 翻译并替换好变量的最终文本
     """
-
-    # 1. 指定语言字典 (直接从内存缓存中拿)
+    # 指定语言字典 (直接从内存缓存中拿)
     lang_data = _LANG_CACHE.get(lang, _LANG_CACHE["zh_cn"])
 
-    # 1. 从字典中获取原始翻译文本
+    # 从字典中获取原始翻译文本
     raw_text = lang_data.get(key)
 
     # 如果找不到对应的键，直接返回提示
@@ -649,11 +843,10 @@ def translate_mc_key(key, lang="zh_cn", *args):
             # 否则（比如是普通玩家名字、数字等），保持原样
             processed_args.append(arg)
 
-    # 2. 将 MC 的占位符 (%s, %d, %1$s, %2$s 等) 替换为 Python 的 {}
-    # [sd] 兼容了字符串(%s)和数字(%d)的占位符格式
+    # 将 MC 的占位符 (%s, %d, %1$s, %2$s 等) 替换为 Python 的 {}
     formatted_text = re.sub(r'%(\d+\$)?[sd]', ' {} ', raw_text)
 
-    # 3. 填入变量
+    # 填入变量
     try:
         return formatted_text.format(*processed_args)
     except IndexError:

@@ -4,7 +4,9 @@ const mineflayer = require('mineflayer');
 const readline = require('node:readline');
 const config = require('./src/configs/config');
 const { resolveSrv } = require('./src/login/srv');
-const { handleMessage, group_msg_handler } = require('./src/handler/messageHandler');
+const { handleMessage, group_msg_handler, extractWhisperInfo } = require('./src/handler/messageHandler');
+const { handleWhisperCommand } = require('./src/handler/whisperCommandHandler');
+const ipc = require('./src/ipc/ipc_protocol');
 
 const QQ_FORWARD_PREFIX = (typeof config.forward_prefix === 'string' && config.forward_prefix.trim())
     ? config.forward_prefix.trim()
@@ -28,60 +30,6 @@ try {
 
 const profile = (startArgs[1] - 1) || 0;
 
-//debug
-//console.log(config.skin)
-
-function normalizeNumericId(rawId) {
-    if (typeof rawId === 'number') {
-        return rawId;
-    }
-
-    if (typeof rawId === 'string' && /^\d+$/.test(rawId)) {
-        return Number(rawId);
-    }
-
-    return rawId;
-}
-
-function normalizeIncomingPayload(rawLine) {
-    const line = rawLine.trim();
-    if (!line) {
-        return null;
-    }
-
-    // Keep backward compatibility: non-JSON line is treated as direct chat text.
-    if (!line.startsWith('{')) {
-        return { msg: line };
-    }
-
-    let parsed;
-    try {
-        parsed = JSON.parse(line);
-    } catch (error) {
-        throw new Error(`stdin 不是有效 JSON: ${error.message}`);
-    }
-
-    if (!parsed || typeof parsed !== 'object') {
-        throw new Error('stdin 消息必须是 JSON 对象');
-    }
-
-    if (typeof parsed.msg !== 'string') {
-        throw new Error('stdin 消息缺少字符串字段 msg');
-    }
-
-    const normalized = {
-        msg: parsed.msg.trim(),
-        group_id: normalizeNumericId(parsed.group_id ?? parsed.group ?? parsed.groupId),
-        sender_id: normalizeNumericId(parsed.sender_id ?? parsed.sender ?? parsed.senderId),
-    };
-
-    if (!normalized.msg) {
-        return null;
-    }
-
-    return normalized;
-}
-
 function buildForwardMessage(message) {
     const normalized = (message || '').trim();
     if (!normalized) {
@@ -95,10 +43,54 @@ function buildForwardMessage(message) {
     return `${QQ_FORWARD_PREFIX} ${normalized}`;
 }
 
-function setupReadlineBridge(bot) {
-    const sendGroup = Array.isArray(config.send_group) ? config.send_group : [];
-    const ignoreUser = Array.isArray(config.ignore_user) ? config.ignore_user : [];
+/**
+ * 处理来自 Py 的统一 IPC 消息。
+ * @param {object} bot - mineflayer bot 实例
+ * @param {object} envelope - 已解码的 IPC envelope { action, timestamp, data }
+ */
+function handleIncomingIPC(bot, envelope) {
+    const { action, data } = envelope;
 
+    switch (action) {
+        case ipc.ACTION_QQ_MESSAGE: {
+            // QQ 群消息转发到 MC
+            const sendGroup = Array.isArray(config.send_group) ? config.send_group : [];
+            const ignoreUser = Array.isArray(config.ignore_user) ? config.ignore_user : [];
+
+            const incoming = {
+                msg: (data.msg || '').trim(),
+                group_id: data.group_id,
+                sender_id: data.sender_id,
+            };
+
+            if (!incoming.msg) return;
+
+            const msg = group_msg_handler(incoming, sendGroup, ignoreUser);
+            if (typeof msg !== 'string' || msg.trim().length === 0) return;
+
+            const outgoingText = buildForwardMessage(msg);
+            if (!outgoingText) return;
+
+            bot.chat(outgoingText);
+            break;
+        }
+
+        case ipc.ACTION_WHISPER_REPLY: {
+            // 指令执行结果回复给 MC 玩家
+            const targetPlayer = data.target_player;
+            const replyMsg = data.msg;
+            if (typeof targetPlayer === 'string' && targetPlayer && typeof replyMsg === 'string' && replyMsg) {
+                bot.whisper(targetPlayer, replyMsg);
+            }
+            break;
+        }
+
+        default:
+            console.warn(`未知的 IPC action: ${action}`);
+    }
+}
+
+function setupReadlineBridge(bot) {
     const rl = readline.createInterface({
         input: process.stdin,
         crlfDelay: Infinity,
@@ -106,22 +98,10 @@ function setupReadlineBridge(bot) {
 
     rl.on('line', (line) => {
         try {
-            const incoming = normalizeIncomingPayload(line);
-            if (!incoming) {
-                return;
-            }
+            const envelope = ipc.decode(line);
+            if (!envelope) return;
 
-            const msg = group_msg_handler(incoming, sendGroup, ignoreUser);
-            if (typeof msg !== 'string' || msg.trim().length === 0) {
-                return;
-            }
-
-            const outgoingText = buildForwardMessage(msg);
-            if (!outgoingText) {
-                return;
-            }
-
-            bot.chat(outgoingText);
+            handleIncomingIPC(bot, envelope);
         } catch (error) {
             console.error(`处理 stdin 消息失败: ${error.message || error}`);
         }
@@ -175,17 +155,34 @@ async function main() {
 
     bot.on('message', jsonMsg => {
         try {
-            console.log('Received message');
             const post_msg = handleMessage(jsonMsg, { forwardPrefix: QQ_FORWARD_PREFIX });
             if (!post_msg) {
                 return;
             }
 
-            const post_const = {
-                timestamp : Date.now(),
-                msg : post_msg
+            // 原版 whisper → 尝试鉴权和指令处理
+            if (post_msg.type === 'whisper') {
+                const whisperInfo = extractWhisperInfo(jsonMsg);
+                if (!whisperInfo) return; // 非原版 whisper 或解析失败
+
+                const cmdResult = handleWhisperCommand(
+                    whisperInfo.player_name,
+                    whisperInfo.whisper_text,
+                    config
+                );
+
+                if (cmdResult) {
+                    // 鉴权通过，发送指令到 Py 端
+                    const encoded = ipc.encode(ipc.ACTION_WHISPER_COMMAND, cmdResult);
+                    process.stdout.write(encoded);
+                }
+                // 无论是否为指令，whisper 都不转发到 QQ
+                return;
             }
-            console.info(JSON.stringify(post_const));
+
+            // 非 whisper 消息，使用统一 IPC 格式输出到 Py 端
+            const encoded = ipc.encode(ipc.ACTION_MC_MESSAGE, post_msg);
+            process.stdout.write(encoded);
         } catch (e) {
             console.error('Error processing message:', e?.jsonMsg || e);
             return;

@@ -68,39 +68,51 @@ async def _(args: Message = CommandArg()):
     if sub_command == "pull":
         await git.send("pulling...")
 
-        process = await asyncio.create_subprocess_shell(
-            (
-                'git -c '
-                'url."https://gh-proxy.org/https://github.com/".insteadOf='
-                '"https://github.com/" pull'
-            ),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        # 复用 mineflayer_js_bridge 中的 _execute_git_pull
+        bridge_module = None
+        for module_name, module in sys.modules.items():
+            if module_name.endswith("mineflayer_js_bridge"):
+                bridge_module = module
+                break
 
-        # 等待命令执行完成并获取输出
-        stdout, stderr = await process.communicate()
+        execute_fn = getattr(bridge_module, "_execute_git_pull", None) if bridge_module else None
 
-        output = stdout.decode().strip() if stdout else ""
-        err_output = stderr.decode().strip() if stderr else ""
-
-        if process.returncode == 0:
-            # 成功拉取代码
-            await git.send(f"{output}")
-            git_log_process = await asyncio.create_subprocess_shell(
-                'git log ORIG_HEAD..HEAD --pretty=format:"%h - %an : %s (%cr)"',
+        if callable(execute_fn):
+            result = await execute_fn()
+            await git.send(result)
+        else:
+            # 回退：直接执行（兼容 bridge 未加载的情况）
+            process = await asyncio.create_subprocess_shell(
+                (
+                    'git -c '
+                    'url."https://gh-proxy.org/https://github.com/".insteadOf='
+                    '"https://github.com/" pull'
+                ),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            log_stdout, _ = await git_log_process.communicate()
-            await git.send(f"{log_stdout.decode().strip()}")
-            await git.send("正在重启······")
-            await _stop_bridge_process_before_restart()
-            # 执行重启操作
-            restart_bot()
-        else:
-            # 拉取失败
-            await git.send(f"更新失败 (错误码 {process.returncode}):\n{err_output}")
+
+            stdout, stderr = await process.communicate()
+            output = stdout.decode().strip() if stdout else ""
+            err_output = stderr.decode().strip() if stderr else ""
+
+            if process.returncode == 0:
+                await git.send(f"{output}")
+                git_log_process = await asyncio.create_subprocess_shell(
+                    'git log ORIG_HEAD..HEAD --pretty=format:"%h - %an : %s (%cr)"',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                log_stdout, _ = await git_log_process.communicate()
+                await git.send(f"{log_stdout.decode().strip()}")
+            else:
+                await git.send(f"更新失败 (错误码 {process.returncode}):\n{err_output}")
+                return
+
+        await git.send("正在重启······")
+        await _stop_bridge_process_before_restart()
+        # 执行重启操作
+        restart_bot()
     elif not sub_command:
         await git.finish("你说得对，但是git是一款由Linus Torvalds开发的......")
     else:

@@ -75,5 +75,25 @@ config.forward_prefix = (
   ?? '[群聊]>>'
 ).toString().trim() || '[群聊]>>';
 
+// Whisper 指令鉴权配置
+config.admin_players = Array.isArray(config.admin_players)
+  ? config.admin_players
+  : Array.isArray(connectConfig.admin_players)
+    ? connectConfig.admin_players
+    : [];
+
+config.user_players = Array.isArray(config.user_players)
+  ? config.user_players
+  : Array.isArray(connectConfig.user_players)
+    ? connectConfig.user_players
+    : [];
+
+config.whisper_command_prefix = (
+  config.whisper_command_prefix
+  ?? connectConfig.whisper_command_prefix
+  ?? connectConfig.whisperCommandPrefix
+  ?? '#'
+).toString().trim() || '#';
+
 // 4. 导出对象
 module.exports = config;
