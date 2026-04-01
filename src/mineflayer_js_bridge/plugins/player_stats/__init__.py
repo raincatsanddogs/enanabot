@@ -16,7 +16,7 @@ from __future__ import annotations
 import io
 import re
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import matplotlib
@@ -194,7 +194,7 @@ def _compute_sessions(
         current_players = set(record.get("p", []))
 
         for player in current_players:
-            dt_now = datetime.fromtimestamp(t, tz=UTC)
+            dt_now = datetime.fromtimestamp(t, tz=timezone.utc)
 
             if player in last_seen:
                 gap = t - last_seen[player]
@@ -229,7 +229,7 @@ async def _generate_line_chart(
     """生成在线人数折线图（含玩家头像面板）。"""
     records_sorted = sorted(records, key=lambda r: r["t"])
 
-    timestamps = [datetime.fromtimestamp(r["t"], tz=UTC) for r in records_sorted]
+    timestamps = [datetime.fromtimestamp(r["t"], tz=timezone.utc) for r in records_sorted]
     counts = [len(r.get("p", [])) for r in records_sorted]
 
     # 收集所有出现过的玩家
