@@ -1,2 +1,5 @@
 nonebot2[fastapi]>=2.4.4
 nonebot-adapter-onebot>=2.4.6
+matplotlib>=3.8
+Pillow>=10.0
+numpy>=1.24
