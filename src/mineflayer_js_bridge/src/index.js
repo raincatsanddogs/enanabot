@@ -136,6 +136,46 @@ async function main() {
 
     setupReadlineBridge(bot);
 
+    // ===== 在线玩家定时采集 =====
+    let playerListInterval = null;
+
+    function collectPlayerList() {
+        const players = bot.players;
+        const playerList = [];
+
+        for (const name in players) {
+            const player = players[name];
+            if (!player || player.username === bot.username) continue;
+
+            // 优先使用服务器提供的 skinData.url，否则回退到 crafatar
+            const skinUrl = (player.skinData && player.skinData.url)
+                ? player.skinData.url
+                : `https://crafatar.com/avatars/${player.uuid}?size=32&overlay`;
+
+            playerList.push({
+                name: player.username,
+                uuid: player.uuid || '',
+                skin_url: skinUrl,
+            });
+        }
+
+        const encoded = ipc.encode(ipc.ACTION_PLAYER_LIST, {
+            players: playerList,
+            count: playerList.length,
+            timestamp: new Date().toISOString(),
+            bot_username: bot.username,
+        });
+        process.stdout.write(encoded);
+    }
+
+    bot.once('spawn', () => {
+        // 首次上线立即采集一次
+        collectPlayerList();
+
+        // 之后每 5 分钟采集一次
+        playerListInterval = setInterval(collectPlayerList, 5 * 60 * 1000);
+    });
+
     //唉，资源包
     bot._client.on('add_resource_pack', (packet) => {
         const uuid = packet.uuid || packet.packId || '00000000-0000-0000-0000-000000000000';
@@ -194,6 +234,10 @@ async function main() {
     });
 
     bot.on('end', (reason) => {
+        if (playerListInterval) {
+            clearInterval(playerListInterval);
+            playerListInterval = null;
+        }
         console.warn(`Bot disconnected: ${reason}`);
         process.exit(1);
     });

@@ -59,6 +59,7 @@ IPC_ACTION_WHISPER_REPLY = "whisper_reply"
 # JS → Py
 IPC_ACTION_MC_MESSAGE = "mc_message"
 IPC_ACTION_WHISPER_COMMAND = "whisper_command"
+IPC_ACTION_PLAYER_LIST = "player_list"
 
 
 def _ipc_encode(action: str, data: dict[str, object]) -> str:
@@ -698,6 +699,9 @@ async def read_stdout(process: asyncio.subprocess.Process):
             elif action == IPC_ACTION_WHISPER_COMMAND:
                 await _handle_whisper_command(data)
 
+            elif action == IPC_ACTION_PLAYER_LIST:
+                await _handle_player_list(data)
+
             else:
                 logger.warning(f"JS 发来未知 IPC action: {action}")
 
@@ -764,6 +768,23 @@ async def _handle_whisper_command(data: dict[str, object]) -> None:
 
     # 通过 MC whisper 回复
     await _send_whisper_reply(player_name, result)
+
+
+async def _handle_player_list(data: dict[str, object]) -> None:
+    """处理来自 JS 的 player_list：记录在线玩家快照。"""
+    from .player_tracker import record_snapshot
+
+    players = data.get("players", [])
+    timestamp = data.get("timestamp", "")
+    bot_username = data.get("bot_username", "")
+
+    if not isinstance(players, list):
+        return
+
+    try:
+        record_snapshot(players, str(timestamp), bot_username=str(bot_username))
+    except Exception as e:
+        logger.error(f"记录玩家快照失败: {e}")
 
 
 async def read_stderr(process: asyncio.subprocess.Process):

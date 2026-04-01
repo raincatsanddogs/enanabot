@@ -14,6 +14,7 @@ const ACTION_WHISPER_REPLY = 'whisper_reply';
 // JS → Py
 const ACTION_MC_MESSAGE = 'mc_message';
 const ACTION_WHISPER_COMMAND = 'whisper_command';
+const ACTION_PLAYER_LIST = 'player_list';
 
 /**
  * 编码一条 IPC 消息为 JSON 行（含换行符）。
@@ -64,6 +65,7 @@ module.exports = {
     ACTION_WHISPER_REPLY,
     ACTION_MC_MESSAGE,
     ACTION_WHISPER_COMMAND,
+    ACTION_PLAYER_LIST,
     // Functions
     encode,
     decode,
