@@ -11,13 +11,10 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from nonebot import get_driver, logger
+from nonebot.adapters.onebot.v11 import Bot, Event
 from nonebot.permission import SUPERUSER, Permission
-
-if TYPE_CHECKING:
-    from nonebot.adapters.onebot.v11 import Bot, Event
 
 
 # ===== 权限等级枚举 =====
@@ -163,7 +160,7 @@ def list_admins() -> list[str]:
 # ===== NoneBot Permission 对象 =====
 
 
-async def _check_admin(bot: "Bot", event: "Event") -> bool:
+async def _check_admin(bot: Bot, event: Event) -> bool:
     """检查事件发送者是否为 admin 或 super。"""
     user_id = getattr(event, "user_id", None)
     if user_id is None:
