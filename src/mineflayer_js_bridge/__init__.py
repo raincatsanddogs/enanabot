@@ -11,7 +11,6 @@ from nonebot import get_bots, get_driver, get_plugin_config, logger, on_command,
 from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import Bot, Event
 from nonebot.params import CommandArg
-from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
 
@@ -24,6 +23,7 @@ try:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from src.utils.permission import ADMIN, PermissionLevel
 except ModuleNotFoundError:
     from utils.command_reaction import (
         EMOJI_STATUS_FAILED,
@@ -31,6 +31,7 @@ except ModuleNotFoundError:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from utils.permission import ADMIN, PermissionLevel
 
 __plugin_meta__ = PluginMetadata(
     name="mineflayer-js-bridge",
@@ -45,7 +46,7 @@ sub_plugins = nonebot.load_plugins(
     str(Path(__file__).parent.joinpath("plugins").resolve())
 )
 
-mc = on_command("mc", rule=to_me(), aliases={"connect"}, priority=5, permission=SUPERUSER)
+mc = on_command("mc", rule=to_me(), aliases={"connect"}, priority=5, permission=ADMIN)
 bridge_input = on_message(priority=20, block=False)
 JS_START_DELAY_SECONDS = 1
 
@@ -111,8 +112,8 @@ def _ipc_decode(line: str) -> dict[str, object] | None:
 
 
 # ===== 指令权限定义 =====
-# admin: 可执行所有指令
-# user: 仅可执行此列表中的指令
+# admin+: 可执行所有指令
+# user: 仅可执行此白名单中的指令
 USER_ALLOWED_COMMANDS: set[str] = {"mc status"}
 
 
@@ -120,19 +121,28 @@ USER_ALLOWED_COMMANDS: set[str] = {"mc status"}
 async def dispatch_command(
     command: str,
     args: list[str],
-    permission_level: str,
+    permission_level: str | PermissionLevel,
 ) -> str:
     """
     统一指令入口。QQ 群指令和 MC whisper 指令共用此函数。
 
     返回值为指令执行结果的文本。
     """
+    # 标准化为 PermissionLevel 枚举
+    if isinstance(permission_level, str):
+        try:
+            level = PermissionLevel(permission_level)
+        except ValueError:
+            level = PermissionLevel.USER
+    else:
+        level = permission_level
+
     full_command = command
     if args:
         full_command = f"{command} {' '.join(args)}"
 
     # 权限检查
-    if permission_level == "user" and full_command not in USER_ALLOWED_COMMANDS:
+    if level < PermissionLevel.ADMIN and full_command not in USER_ALLOWED_COMMANDS:
         return f"权限不足：{full_command}"
 
     # mc 指令
@@ -633,7 +643,7 @@ async def _(bot: Bot, event: Event, args: Message = CommandArg()):
         await set_status_emoji(bot, message_id, target_emoji)
 
     elif start == "status":
-        result = await dispatch_command("mc", ["status"], "admin")
+        result = await dispatch_command("mc", ["status"], PermissionLevel.ADMIN)
         await mc.send(result)
         await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
 

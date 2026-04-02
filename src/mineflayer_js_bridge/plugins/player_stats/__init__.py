@@ -302,7 +302,7 @@ def _format_duration(seconds: int) -> str:
 
 # ===== 在线会话计算 =====
 
-MAX_GAP = 450  # 两次快照最大间隔（秒），超过则视为新会话（5min × 1.5）
+MAX_GAP = 325  # 两次快照最大间隔（秒），超过则视为新会话（意义明确的间隔（）
 
 
 def _compute_sessions(
