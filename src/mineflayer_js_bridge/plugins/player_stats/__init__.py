@@ -34,12 +34,21 @@ from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
 from PIL import Image
-from utils.command_reaction import (
-    EMOJI_STATUS_FAILED,
-    EMOJI_STATUS_PROCESSING,
-    EMOJI_STATUS_SUCCESS,
-    set_status_emoji,
-)
+
+try:
+    from src.utils.command_reaction import (
+        EMOJI_STATUS_FAILED,
+        EMOJI_STATUS_PROCESSING,
+        EMOJI_STATUS_SUCCESS,
+        set_status_emoji,
+    )
+except ModuleNotFoundError:
+    from utils.command_reaction import (
+        EMOJI_STATUS_FAILED,
+        EMOJI_STATUS_PROCESSING,
+        EMOJI_STATUS_SUCCESS,
+        set_status_emoji,
+    )
 
 from ...player_tracker import (
     generate_placeholder_head,

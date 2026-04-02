@@ -16,12 +16,21 @@ from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
 
 from .config import Config
-from utils.command_reaction import (
-    EMOJI_STATUS_FAILED,
-    EMOJI_STATUS_PROCESSING,
-    EMOJI_STATUS_SUCCESS,
-    set_status_emoji,
-)
+
+try:
+    from src.utils.command_reaction import (
+        EMOJI_STATUS_FAILED,
+        EMOJI_STATUS_PROCESSING,
+        EMOJI_STATUS_SUCCESS,
+        set_status_emoji,
+    )
+except ModuleNotFoundError:
+    from utils.command_reaction import (
+        EMOJI_STATUS_FAILED,
+        EMOJI_STATUS_PROCESSING,
+        EMOJI_STATUS_SUCCESS,
+        set_status_emoji,
+    )
 
 __plugin_meta__ = PluginMetadata(
     name="mineflayer-js-bridge",

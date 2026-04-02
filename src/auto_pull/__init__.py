@@ -12,12 +12,21 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
-from utils.command_reaction import (
-    EMOJI_STATUS_FAILED,
-    EMOJI_STATUS_PROCESSING,
-    EMOJI_STATUS_SUCCESS,
-    set_status_emoji,
-)
+
+try:
+    from src.utils.command_reaction import (
+        EMOJI_STATUS_FAILED,
+        EMOJI_STATUS_PROCESSING,
+        EMOJI_STATUS_SUCCESS,
+        set_status_emoji,
+    )
+except ModuleNotFoundError:
+    from utils.command_reaction import (
+        EMOJI_STATUS_FAILED,
+        EMOJI_STATUS_PROCESSING,
+        EMOJI_STATUS_SUCCESS,
+        set_status_emoji,
+    )
 
 from .config import Config
 
