@@ -11,7 +11,6 @@ from nonebot.adapters.onebot.v11 import Bot, MessageEvent
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import to_me
 
 try:
     from src.utils.command_reaction import (
@@ -20,6 +19,7 @@ try:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from src.utils.trigger import to_me_or_prefix
 except ModuleNotFoundError:
     from utils.command_reaction import (
         EMOJI_STATUS_FAILED,
@@ -27,14 +27,16 @@ except ModuleNotFoundError:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from utils.trigger import to_me_or_prefix
 
 from .config import Config
 
 __plugin_meta__ = PluginMetadata(
-    name="auto-pull",
-    description="Automatically pull changes from a Git repository",
-    usage="",
+    name="git",
+    description="Git 仓库更新与重启",
+    usage="git pull",
     config=Config,
+    extra={"group": "管理"},
 )
 
 config = get_plugin_config(Config)
@@ -43,7 +45,7 @@ sub_plugins = nonebot.load_plugins(
     str(Path(__file__).parent.joinpath("plugins").resolve())
 )
 
-git = on_command("git", rule=to_me(), aliases={"git"}, priority=5, permission=SUPERUSER)
+git = on_command("git", rule=to_me_or_prefix(), aliases={"git"}, priority=5, permission=SUPERUSER)
 
 
 async def _stop_bridge_process_before_restart() -> None:

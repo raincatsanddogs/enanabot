@@ -15,6 +15,7 @@ from .permission import (
     list_admins,
     remove_admin,
 )
+from .trigger import to_me_or_prefix
 
 __all__ = [
     "ADMIN",
@@ -28,4 +29,5 @@ __all__ = [
     "list_admins",
     "remove_admin",
     "set_status_emoji",
+    "to_me_or_prefix",
 ]

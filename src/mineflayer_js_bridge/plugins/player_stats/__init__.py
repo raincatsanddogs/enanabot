@@ -32,7 +32,6 @@ from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import to_me
 from PIL import Image
 
 try:
@@ -42,6 +41,7 @@ try:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from src.utils.trigger import to_me_or_prefix
 except ModuleNotFoundError:
     from utils.command_reaction import (
         EMOJI_STATUS_FAILED,
@@ -49,6 +49,7 @@ except ModuleNotFoundError:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from utils.trigger import to_me_or_prefix
 
 from ...player_tracker import (
     generate_placeholder_head,
@@ -60,9 +61,10 @@ from ...player_tracker import (
 matplotlib.use("Agg")
 
 __plugin_meta__ = PluginMetadata(
-    name="player-stats",
+    name="list",
     description="在线玩家统计（折线图/甘特图）",
     usage="list [-n|-g] [-3d12h30m]",
+    extra={"group": "MC"},
 )
 
 # ===== 图表风格配置 =====
@@ -185,7 +187,7 @@ def _configure_matplotlib_fonts() -> bool:
 CJK_FONT_AVAILABLE = _configure_matplotlib_fonts()
 plt.rcParams["axes.unicode_minus"] = False
 
-list_cmd = on_command("list", rule=to_me(), priority=5)
+list_cmd = on_command("list", rule=to_me_or_prefix(), priority=5)
 
 
 def _chart_text(cn: str, en: str) -> str:

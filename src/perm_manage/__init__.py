@@ -21,7 +21,6 @@ from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import to_me
 
 try:
     from src.utils.command_reaction import (
@@ -37,6 +36,7 @@ try:
         list_admins,
         remove_admin,
     )
+    from src.utils.trigger import to_me_or_prefix
 except ModuleNotFoundError:
     from utils.command_reaction import (
         EMOJI_STATUS_FAILED,
@@ -51,16 +51,18 @@ except ModuleNotFoundError:
         list_admins,
         remove_admin,
     )
+    from utils.trigger import to_me_or_prefix
 
 __plugin_meta__ = PluginMetadata(
-    name="perm-manage",
-    description="三级权限管理（user/admin/super）",
+    name="perm",
+    description="权限管理（user/admin/super）",
     usage="perm <add|rm|list|check> [QQ号/@某人]",
+    extra={"group": "管理"},
 )
 
 # ===== 指令注册 =====
 
-perm_cmd = on_command("perm", rule=to_me(), aliases={"权限"}, priority=5)
+perm_cmd = on_command("perm", rule=to_me_or_prefix(), aliases={"权限"}, priority=5)
 
 
 # ===== 工具函数 =====

@@ -12,7 +12,6 @@ from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import Bot, Event
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import to_me
 
 from .config import Config
 
@@ -24,6 +23,7 @@ try:
         set_status_emoji,
     )
     from src.utils.permission import ADMIN, PermissionLevel
+    from src.utils.trigger import to_me_or_prefix
 except ModuleNotFoundError:
     from utils.command_reaction import (
         EMOJI_STATUS_FAILED,
@@ -32,12 +32,14 @@ except ModuleNotFoundError:
         set_status_emoji,
     )
     from utils.permission import ADMIN, PermissionLevel
+    from utils.trigger import to_me_or_prefix
 
 __plugin_meta__ = PluginMetadata(
-    name="mineflayer-js-bridge",
-    description="A bridge for connecting Mineflayer and JavaScript",
-    usage="",
+    name="mc",
+    description="MC 服务器连接管理",
+    usage="mc <start|stop|status>",
     config=Config,
+    extra={"group": "MC"},
 )
 
 config = get_plugin_config(Config)
@@ -46,7 +48,7 @@ sub_plugins = nonebot.load_plugins(
     str(Path(__file__).parent.joinpath("plugins").resolve())
 )
 
-mc = on_command("mc", rule=to_me(), aliases={"connect"}, priority=5, permission=ADMIN)
+mc = on_command("mc", rule=to_me_or_prefix(), aliases={"connect"}, priority=5, permission=ADMIN)
 bridge_input = on_message(priority=20, block=False)
 JS_START_DELAY_SECONDS = 1
 
