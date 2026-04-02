@@ -68,25 +68,23 @@ __plugin_meta__ = PluginMetadata(
 )
 
 # ===== 图表风格配置 =====
-BG_COLOR = "#0f0f1a"
-CARD_COLOR = "#1a1a2e"
-TEXT_COLOR = "#e0e0e0"
-GRID_COLOR = "#2a2a3e"
-ACCENT_COLOR = "#00d2ff"
-ACCENT_GRADIENT_TOP = "#00d2ff"
-ACCENT_GRADIENT_BOT = "#0f0f1a"
+BG_COLOR = "#f4f5f7"          # 浅灰背景
+CARD_COLOR = "#ffffff"        # 纯白卡片
+TEXT_COLOR = "#1f2329"        # 深灰接近黑色的文字
+GRID_COLOR = "#e4e6eb"        # 柔和的网格线
+ACCENT_COLOR = "#0052cc"      # 主题波浪/折线的蓝色
 
 GANTT_COLORS = [
-    "#00d2ff",  # cyan
-    "#7b68ee",  # 中板蓝
-    "#ff6b6b",  # 珊瑚红
-    "#51cf66",  # 绿
-    "#ffd43b",  # 黄
-    "#ff922b",  # 橙
-    "#cc5de8",  # 紫
-    "#20c997",  # 蓝绿
-    "#ff8787",  # 浅红
-    "#748ffc",  # 靛蓝
+    "#0052cc",  # 深蓝
+    "#36b37e",  # 绿
+    "#ff5630",  # 红
+    "#ffab00",  # 黄/橙
+    "#6554c0",  # 紫
+    "#00b8d9",  # 青
+    "#ff7452",  # 珊瑚橘
+    "#57d9a3",  # 浅绿
+    "#8777d9",  # 浅紫
+    "#2684ff",  # 亮蓝
 ]
 
 # list 图表统一使用 UTC+8 显示时间
@@ -395,7 +393,7 @@ async def _generate_line_chart(
     ax_main.set_facecolor(CARD_COLOR)
 
     # 霓虹发光效果 (多层透明度叠加)
-    for lw, a in [(7, 0.03), (5, 0.08), (3, 0.15)]:
+    for lw, a in [(7, 0.05), (5, 0.1), (3, 0.2)]:
         ax_main.plot(
             timestamps,
             counts,
@@ -544,7 +542,7 @@ async def _generate_gantt_chart(
                 left=mdates.date2num(start),
                 height=0.6,
                 color="#000000",
-                alpha=0.3,
+                alpha=0.15,
                 edgecolor="none",
                 zorder=1,
             )
@@ -647,35 +645,52 @@ async def _generate_gantt_chart(
 
     # 绘制延迟的时间标注（此时 axes 变换已就绪）
     fig.canvas.draw()  # 确保 transData 准确
+    _time_annotations.sort(key=lambda x: (x[2], x[0]))
+
+    last_y_idx = -1
+    last_right_px = -9999
+    text_width_px = 25  # 估算文本所需像素宽度以避免重叠
+
     for bar_start, bar_end, y_idx, s_str, e_str in _time_annotations:
+        if y_idx != last_y_idx:
+            last_y_idx = y_idx
+            last_right_px = -9999
+
         px_start = ax.transData.transform((bar_start, 0))[0]
         px_end = ax.transData.transform((bar_end, 0))[0]
         bar_px_w = px_end - px_start
 
+        # 处理起始时间文字
         if bar_px_w > 100:
-            # 条足够宽：时间标在条内两端
-            ax.text(
-                bar_start, y_idx, f" {s_str}",
-                va="center", ha="left",
-                fontsize=6, color="#ffffff", fontweight="bold", zorder=10,
-            )
-            ax.text(
-                bar_end, y_idx, f"{e_str} ",
-                va="center", ha="right",
-                fontsize=6, color="#ffffff", fontweight="bold", zorder=10,
-            )
+            s_ha, s_left, s_right = "left", px_start, px_start + text_width_px
+            s_color, s_weight = "#ffffff", "bold"
         else:
-            # 条较窄：时间标在条外两侧
+            s_ha, s_left, s_right = "right", px_start - text_width_px, px_start
+            s_color, s_weight = TEXT_COLOR, "normal"
+            
+        if s_left >= last_right_px:
             ax.text(
-                bar_start, y_idx, f"{s_str} ",
-                va="center", ha="right",
-                fontsize=6, color=TEXT_COLOR, zorder=10,
+                bar_start, y_idx, f" {s_str}" if s_ha == "left" else f"{s_str} ",
+                va="center", ha=s_ha,
+                fontsize=6, color=s_color, fontweight=s_weight, zorder=10,
             )
+            last_right_px = s_right
+
+        # 处理结束时间文字
+        if bar_px_w > 100:
+            e_ha, e_left, e_right = "right", px_end - text_width_px, px_end
+            e_color, e_weight = "#ffffff", "bold"
+        else:
+            e_ha, e_left, e_right = "left", px_end, px_end + text_width_px
+            e_color, e_weight = TEXT_COLOR, "normal"
+
+        if e_left >= last_right_px:
             ax.text(
-                bar_end, y_idx, f" {e_str}",
-                va="center", ha="left",
-                fontsize=6, color=TEXT_COLOR, zorder=10,
+                bar_end, y_idx, f"{e_str} " if e_ha == "right" else f" {e_str}",
+                va="center", ha=e_ha,
+                fontsize=6, color=e_color, fontweight=e_weight, zorder=10,
             )
+            last_right_px = e_right
 
     # 增加左侧边距以容纳头像+玩家名
     fig.tight_layout(pad=1.5)
