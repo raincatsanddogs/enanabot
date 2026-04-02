@@ -623,23 +623,23 @@ async def _(bot: Bot, event: Event, args: Message = CommandArg()):
     if start == "start":
         started, message = await _start_js_process(bot=bot, event=event, persist_state=True)
         target_emoji = EMOJI_STATUS_SUCCESS if started else EMOJI_STATUS_FAILED
+        await mc.send(message)
         await set_status_emoji(bot, message_id, target_emoji)
-        await mc.finish(message)
 
     elif start == "stop":
         stopped, message = await _stop_js_process(persist_state=True)
         target_emoji = EMOJI_STATUS_SUCCESS if stopped else EMOJI_STATUS_FAILED
+        await mc.send(message)
         await set_status_emoji(bot, message_id, target_emoji)
-        await mc.finish(message)
 
     elif start == "status":
         result = await dispatch_command("mc", ["status"], "admin")
+        await mc.send(result)
         await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
-        await mc.finish(result)
 
     else:
+        await mc.send("干什么?!")
         await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
-        await mc.finish("干什么?!")
 
 
 @bridge_input.handle()

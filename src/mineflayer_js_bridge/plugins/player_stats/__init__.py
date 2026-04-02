@@ -232,8 +232,9 @@ async def handle_list(
 
     # 发送图片
     seg = MessageSegment.image(img_bytes)
+    await list_cmd.send(seg)
     await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
-    await list_cmd.finish(seg)
+
 
 
 # ===== 参数解析 =====
@@ -418,9 +419,11 @@ async def _generate_line_chart(
         fontweight="bold",
         pad=12,
     )
-    ax_main.set_ylabel(_chart_text("在线人数", "Online Players"), color=TEXT_COLOR, fontsize=11)
+    # 不添加 y 轴标题，图表标题已足够说明
     ax_main.tick_params(colors=TEXT_COLOR, labelsize=9)
-    ax_main.grid(True, color=GRID_COLOR, alpha=0.5, linewidth=0.5)
+    ax_main.grid(True, which="major", color=GRID_COLOR, alpha=0.5, linewidth=0.5)
+    ax_main.grid(True, which="minor", color=GRID_COLOR, alpha=0.2, linewidth=0.3)
+    ax_main.minorticks_on()
     ax_main.set_xlim(timestamps[0], timestamps[-1])
 
     # Y 轴整数刻度
@@ -451,6 +454,7 @@ async def _generate_line_chart(
         _draw_head_grid(ax_heads, all_players_list, heads, heads_per_row)
 
     fig.tight_layout(pad=1.5)
+    fig.subplots_adjust(right=0.95)
     return _fig_to_bytes(fig)
 
 
@@ -487,6 +491,9 @@ async def _generate_gantt_chart(
     fig, ax = plt.subplots(1, 1, figsize=(12, fig_height), facecolor=BG_COLOR)
     ax.set_facecolor(CARD_COLOR)
 
+    # 收集需要标注的时间信息（延迟到 axes 配置后绘制）
+    _time_annotations: list[tuple[float, float, int, str, str]] = []
+
     # 绘制每个玩家的在线条
     for i, player in enumerate(players_sorted):
         color = GANTT_COLORS[i % len(GANTT_COLORS)]
@@ -494,10 +501,11 @@ async def _generate_gantt_chart(
 
         for start, end in player_sessions:
             # 单点快照（仅出现一次）：扩展到 5 分钟显示宽度
+            display_end = end
             if start == end:
-                end = start + timedelta(minutes=5)
+                display_end = start + timedelta(minutes=5)
 
-            bar_width = mdates.date2num(end) - mdates.date2num(start)
+            bar_width = mdates.date2num(display_end) - mdates.date2num(start)
             ax.barh(
                 i,
                 bar_width,
@@ -509,38 +517,59 @@ async def _generate_gantt_chart(
                 linewidth=0.5,
             )
 
-    # Y 轴标签 + 头像
+            # 记录标注信息
+            start_str = start.strftime("%H:%M")
+            end_str = end.strftime("%H:%M")
+            _time_annotations.append((
+                mdates.date2num(start),
+                mdates.date2num(display_end),
+                i,
+                start_str,
+                end_str,
+            ))
+
+    # Y 轴标签（玩家名）
     ax.set_yticks(range(n_players))
     ax.set_yticklabels(
-        [f"  {name}" for name in players_sorted],
-        color=TEXT_COLOR,
-        fontsize=9,
+        ["" for _ in players_sorted],  # 不用 tick label，改用头像+文字
     )
 
-    # 在 Y 轴左侧放置头像
+    # 在 Y 轴左侧放置头像（上）+ 玩家名（下），垂直排列
     for i, player in enumerate(players_sorted):
         head_data = heads.get(player)
-        if head_data is None:
-            continue
 
-        try:
-            head_img = Image.open(io.BytesIO(head_data)).convert("RGBA")
-            head_arr = np.array(head_img)
+        if head_data is not None:
+            try:
+                head_img = Image.open(io.BytesIO(head_data)).convert("RGBA")
+                head_arr = np.array(head_img)
 
-            imagebox = OffsetImage(head_arr, zoom=0.5)
-            imagebox.image.axes = ax
+                imagebox = OffsetImage(head_arr, zoom=0.45)
+                imagebox.image.axes = ax
 
-            ab = AnnotationBbox(
-                imagebox,
-                (0, i),
-                xybox=(-30, 0),
-                xycoords=("axes fraction", "data"),
-                boxcoords="offset points",
-                frameon=False,
-            )
-            ax.add_artist(ab)
-        except Exception as e:
-            logger.debug(f"头像渲染失败 {player}: {e}")
+                ab = AnnotationBbox(
+                    imagebox,
+                    (0, i),
+                    xybox=(-40, 8),
+                    xycoords=("axes fraction", "data"),
+                    boxcoords="offset points",
+                    frameon=False,
+                )
+                ax.add_artist(ab)
+            except Exception as e:
+                logger.debug(f"头像渲染失败 {player}: {e}")
+
+        # 玩家名放在头像下方
+        ax.annotate(
+            player,
+            xy=(0, i),
+            xytext=(-40, -8),
+            xycoords=("axes fraction", "data"),
+            textcoords="offset points",
+            ha="center",
+            va="top",
+            fontsize=7,
+            color=TEXT_COLOR,
+        )
 
     # 样式
     ax.set_title(
@@ -558,16 +587,51 @@ async def _generate_gantt_chart(
 
     ax.tick_params(axis="x", colors=TEXT_COLOR, labelsize=9)
     ax.tick_params(axis="y", colors=TEXT_COLOR, labelsize=9)
-    ax.grid(True, axis="x", color=GRID_COLOR, alpha=0.5, linewidth=0.5)
+    ax.grid(True, which="major", axis="x", color=GRID_COLOR, alpha=0.5, linewidth=0.5)
+    ax.grid(True, which="minor", axis="x", color=GRID_COLOR, alpha=0.2, linewidth=0.3)
+    ax.minorticks_on()
+    ax.tick_params(axis="y", which="minor", left=False)
     ax.set_axisbelow(True)
     ax.invert_yaxis()
 
     for spine in ax.spines.values():
         spine.set_color(GRID_COLOR)
 
-    # 增加左侧边距以容纳头像
-    fig.subplots_adjust(left=0.18)
+    # 绘制延迟的时间标注（此时 axes 变换已就绪）
+    fig.canvas.draw()  # 确保 transData 准确
+    for bar_start, bar_end, y_idx, s_str, e_str in _time_annotations:
+        px_start = ax.transData.transform((bar_start, 0))[0]
+        px_end = ax.transData.transform((bar_end, 0))[0]
+        bar_px_w = px_end - px_start
+
+        if bar_px_w > 100:
+            # 条足够宽：时间标在条内两端
+            ax.text(
+                bar_start, y_idx, f" {s_str}",
+                va="center", ha="left",
+                fontsize=6, color="#ffffff", fontweight="bold", zorder=10,
+            )
+            ax.text(
+                bar_end, y_idx, f"{e_str} ",
+                va="center", ha="right",
+                fontsize=6, color="#ffffff", fontweight="bold", zorder=10,
+            )
+        else:
+            # 条较窄：时间标在条外两侧
+            ax.text(
+                bar_start, y_idx, f"{s_str} ",
+                va="center", ha="right",
+                fontsize=6, color=TEXT_COLOR, zorder=10,
+            )
+            ax.text(
+                bar_end, y_idx, f" {e_str}",
+                va="center", ha="left",
+                fontsize=6, color=TEXT_COLOR, zorder=10,
+            )
+
+    # 增加左侧边距以容纳头像+玩家名
     fig.tight_layout(pad=1.5)
+    fig.subplots_adjust(left=0.12)
     return _fig_to_bytes(fig)
 
 
@@ -648,24 +712,42 @@ def _auto_format_xaxis(
     ax: plt.Axes,
     timestamps: list[datetime] | None,
 ) -> None:
-    """根据时间跨度自动选择 X 轴格式。"""
+    """根据时间跨度自动选择 X 轴格式，含主刻度和细刻度。"""
     if timestamps and len(timestamps) >= 2:
         span = (timestamps[-1] - timestamps[0]).total_seconds()
     else:
         span = 86400  # 默认 1 天
 
     if span <= 3600 * 3:
+        # ≤3h：主刻度 15min，细刻度 5min
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=DISPLAY_TIMEZONE))
         ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=15, tz=DISPLAY_TIMEZONE))
-    elif span <= 86400:
+        ax.xaxis.set_minor_locator(mdates.MinuteLocator(interval=5, tz=DISPLAY_TIMEZONE))
+    elif span <= 3600 * 12:
+        # ≤12h：主刻度 1h，细刻度 15min
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=DISPLAY_TIMEZONE))
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2, tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=1, tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_minor_locator(mdates.MinuteLocator(interval=15, tz=DISPLAY_TIMEZONE))
+    elif span <= 86400:
+        # ≤24h：主刻度 1h，细刻度 30min
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=1, tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_minor_locator(mdates.MinuteLocator(interval=30, tz=DISPLAY_TIMEZONE))
+    elif span <= 86400 * 3:
+        # ≤3d：主刻度 6h，细刻度 1h
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M", tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=6, tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=1, tz=DISPLAY_TIMEZONE))
     elif span <= 86400 * 7:
+        # ≤7d：主刻度 12h，细刻度 3h
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M", tz=DISPLAY_TIMEZONE))
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=12, tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=3, tz=DISPLAY_TIMEZONE))
     else:
+        # >7d：主刻度 1d，细刻度 6h
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d", tz=DISPLAY_TIMEZONE))
         ax.xaxis.set_major_locator(mdates.DayLocator(tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6, tz=DISPLAY_TIMEZONE))
 
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
 
