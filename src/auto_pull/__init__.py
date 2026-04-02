@@ -7,10 +7,17 @@ from pathlib import Path
 import nonebot
 from nonebot import get_plugin_config, logger, on_command
 from nonebot.adapters import Message
+from nonebot.adapters.onebot.v11 import Bot, MessageEvent
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
+from utils.command_reaction import (
+    EMOJI_STATUS_FAILED,
+    EMOJI_STATUS_PROCESSING,
+    EMOJI_STATUS_SUCCESS,
+    set_status_emoji,
+)
 
 from .config import Config
 
@@ -63,7 +70,10 @@ async def _stop_bridge_process_before_restart() -> None:
         logger.exception(f"重启前停止 JS 子进程失败: {error}")
 
 @git.handle()
-async def _(args: Message = CommandArg()):
+async def _(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
+    message_id = getattr(event, "message_id", None)
+    await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
+
     sub_command = args.extract_plain_text().strip()
     if sub_command == "pull":
         await git.send("pulling...")
@@ -80,6 +90,9 @@ async def _(args: Message = CommandArg()):
         if callable(execute_fn):
             result = await execute_fn()
             await git.send(result)
+            if "更新失败" in result:
+                await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
+                return
         else:
             # 回退：直接执行（兼容 bridge 未加载的情况）
             process = await asyncio.create_subprocess_shell(
@@ -106,16 +119,20 @@ async def _(args: Message = CommandArg()):
                 log_stdout, _ = await git_log_process.communicate()
                 await git.send(f"{log_stdout.decode().strip()}")
             else:
+                await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
                 await git.send(f"更新失败 (错误码 {process.returncode}):\n{err_output}")
                 return
 
+        await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
         await git.send("正在重启······")
         await _stop_bridge_process_before_restart()
         # 执行重启操作
         restart_bot()
     elif not sub_command:
+        await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
         await git.finish("你说得对，但是git是一款由Linus Torvalds开发的......")
     else:
+        await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
         await git.finish("干什么?!")
 
 

@@ -16,6 +16,12 @@ from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
 
 from .config import Config
+from utils.command_reaction import (
+    EMOJI_STATUS_FAILED,
+    EMOJI_STATUS_PROCESSING,
+    EMOJI_STATUS_SUCCESS,
+    set_status_emoji,
+)
 
 __plugin_meta__ = PluginMetadata(
     name="mineflayer-js-bridge",
@@ -600,21 +606,30 @@ async def _stop_js_process_on_shutdown() -> None:
 
 @mc.handle()
 async def _(bot: Bot, event: Event, args: Message = CommandArg()):
+    message_id = getattr(event, "message_id", None)
+    await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
+
     start = args.extract_plain_text().strip()
 
     if start == "start":
-        _, message = await _start_js_process(bot=bot, event=event, persist_state=True)
+        started, message = await _start_js_process(bot=bot, event=event, persist_state=True)
+        target_emoji = EMOJI_STATUS_SUCCESS if started else EMOJI_STATUS_FAILED
+        await set_status_emoji(bot, message_id, target_emoji)
         await mc.finish(message)
 
     elif start == "stop":
-        _, message = await _stop_js_process(persist_state=True)
+        stopped, message = await _stop_js_process(persist_state=True)
+        target_emoji = EMOJI_STATUS_SUCCESS if stopped else EMOJI_STATUS_FAILED
+        await set_status_emoji(bot, message_id, target_emoji)
         await mc.finish(message)
 
     elif start == "status":
         result = await dispatch_command("mc", ["status"], "admin")
+        await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
         await mc.finish(result)
 
     else:
+        await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
         await mc.finish("干什么?!")
 
 

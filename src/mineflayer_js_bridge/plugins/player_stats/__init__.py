@@ -14,10 +14,12 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import matplotlib
 import matplotlib.dates as mdates
@@ -27,14 +29,17 @@ from matplotlib import font_manager
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from nonebot import logger, on_command
 from nonebot.adapters import Message
-from nonebot.adapters.onebot.v11 import MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
 from PIL import Image
-
-if TYPE_CHECKING:
-    from nonebot.adapters.onebot.v11 import Bot, Event
+from utils.command_reaction import (
+    EMOJI_STATUS_FAILED,
+    EMOJI_STATUS_PROCESSING,
+    EMOJI_STATUS_SUCCESS,
+    set_status_emoji,
+)
 
 from ...player_tracker import (
     generate_placeholder_head,
@@ -80,16 +85,76 @@ PREFERRED_CJK_FONTS = [
     "PingFang SC",
     "Hiragino Sans GB",
     "Noto Sans CJK SC",
+    "Noto Sans CJK JP",
+    "Noto Sans CJK TC",
     "WenQuanYi Zen Hei",
+    "WenQuanYi Micro Hei",
     "Source Han Sans SC",
     "Arial Unicode MS",
 ]
 
+LINUX_CJK_FONT_PATHS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+]
+
+CJK_FONT_KEYWORDS = [
+    "Noto Sans CJK",
+    "WenQuanYi",
+    "Source Han Sans",
+    "Droid Sans Fallback",
+    "AR PL",
+]
+
+
+def _register_linux_cjk_fonts() -> list[str]:
+    """注册 Linux 常见中文字体文件，返回注册到的字体名。"""
+    loaded_names: list[str] = []
+    if os.name == "nt":
+        return loaded_names
+
+    for font_path in LINUX_CJK_FONT_PATHS:
+        if not Path(font_path).exists():
+            continue
+        try:
+            font_manager.fontManager.addfont(font_path)
+            font_name = font_manager.FontProperties(fname=font_path).get_name()
+            if font_name:
+                loaded_names.append(font_name)
+        except Exception as error:
+            logger.debug(f"注册 Linux 字体失败 {font_path}: {error}")
+
+    return loaded_names
+
 
 def _configure_matplotlib_fonts() -> bool:
     """配置 matplotlib 字体，返回是否可用中文字体。"""
+    reload_func = getattr(font_manager, "_load_fontmanager", None)
+    if callable(reload_func):
+        try:
+            reload_func(try_read_cache=False)
+        except Exception as error:
+            logger.debug(f"刷新 matplotlib 字体缓存失败: {error}")
+
+    loaded_names = _register_linux_cjk_fonts()
     available = {font.name for font in font_manager.fontManager.ttflist}
+
+    if loaded_names:
+        available.update(loaded_names)
+        logger.info(f"player_stats 已注册 Linux 字体: {', '.join(loaded_names)}")
+
     matched = [name for name in PREFERRED_CJK_FONTS if name in available]
+
+    if not matched:
+        matched = sorted(
+            [
+                name
+                for name in available
+                if any(keyword in name for keyword in CJK_FONT_KEYWORDS)
+            ],
+        )
 
     if matched:
         plt.rcParams["font.sans-serif"] = [*matched, "DejaVu Sans", "sans-serif"]
@@ -98,7 +163,10 @@ def _configure_matplotlib_fonts() -> bool:
 
     # 没有可用中文字体时回退英文文案，避免中文缺字告警。
     plt.rcParams["font.sans-serif"] = ["DejaVu Sans", "sans-serif"]
-    logger.warning("player_stats 未检测到可用中文字体，将使用英文图表文案。")
+    logger.warning(
+        "player_stats 未检测到可用中文字体，将使用英文图表文案。"
+        "请安装 fonts-noto-cjk 或 fonts-wqy-zenhei，并清理 ~/.cache/matplotlib。",
+    )
     return False
 
 
@@ -118,9 +186,14 @@ def _chart_text(cn: str, en: str) -> str:
 
 @list_cmd.handle()
 async def handle_list(
+    bot: Bot,
+    event: MessageEvent,
     args: Message = CommandArg(),
 ) -> None:
     """处理 list 指令。"""
+    message_id = getattr(event, "message_id", None)
+    await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
+
     args_text = args.extract_plain_text().strip()
     chart_type, duration_seconds = _parse_args(args_text)
 
@@ -130,6 +203,7 @@ async def handle_list(
     records = load_records(since_ts, now_ts)
 
     if not records:
+        await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
         await list_cmd.finish("该时间范围内没有在线数据记录 📭")
 
     duration_label = _format_duration(duration_seconds)
@@ -141,10 +215,12 @@ async def handle_list(
             img_bytes = await _generate_line_chart(records, duration_label)
     except Exception as e:
         logger.error(f"生成图表失败: {e}")
+        await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
         await list_cmd.finish(f"生成图表时出错：{e}")
 
     # 发送图片
     seg = MessageSegment.image(img_bytes)
+    await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
     await list_cmd.finish(seg)
 
 

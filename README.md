@@ -103,6 +103,38 @@ python -c "from matplotlib import font_manager; fs={f.name for f in font_manager
 
 输出列表非空即表示已识别到可用中文字体。
 
+### Ubuntu 仍无法显示中文时（排障）
+
+1. 确认字体包已安装
+
+```bash
+sudo apt-get update
+sudo apt-get install -y fontconfig fonts-noto-cjk fonts-wqy-zenhei
+```
+
+2. 刷新系统字体缓存
+
+```bash
+fc-cache -f -v
+fc-list :lang=zh family | head -n 20
+```
+
+3. 清理 matplotlib 字体缓存（非常关键）
+
+```bash
+rm -rf ~/.cache/matplotlib
+```
+
+4. 在 bot 运行用户下验证 matplotlib 可见字体
+
+```bash
+python -c "from matplotlib import font_manager; names=sorted({f.name for f in font_manager.fontManager.ttflist}); print([n for n in names if 'Noto Sans CJK' in n or 'WenQuanYi' in n or 'Source Han' in n][:20])"
+```
+
+5. 重启 bot 进程
+
+如果你是 systemd 部署，请确认服务用户与手动执行命令的用户一致，否则会出现“命令行可见字体、服务进程不可见字体”的情况。
+
 ## 文档
 
 - NoneBot 文档：[https://nonebot.dev/](https://nonebot.dev/)
