@@ -394,21 +394,40 @@ async def _generate_line_chart(
 
     ax_main.set_facecolor(CARD_COLOR)
 
-    # 折线 + 渐变填充
+    # 霓虹发光效果 (多层透明度叠加)
+    for lw, a in [(7, 0.03), (5, 0.08), (3, 0.15)]:
+        ax_main.plot(
+            timestamps,
+            counts,
+            color=ACCENT_COLOR,
+            linewidth=lw,
+            alpha=a,
+            drawstyle="steps-post",
+            zorder=4,
+        )
+
+    # 主折线与数据点
     ax_main.plot(
         timestamps,
         counts,
         color=ACCENT_COLOR,
         linewidth=2,
         marker="o",
-        markersize=3,
+        markersize=4,
+        markeredgecolor=CARD_COLOR,
+        markeredgewidth=1,
+        drawstyle="steps-post",
         zorder=5,
     )
+
+    # 阶梯渐变填充
     ax_main.fill_between(
         timestamps,
         counts,
         alpha=0.15,
         color=ACCENT_COLOR,
+        step="post",
+        zorder=3,
     )
 
     # 样式
@@ -417,9 +436,10 @@ async def _generate_line_chart(
             duration=duration_label,
         ),
         color=TEXT_COLOR,
-        fontsize=14,
+        fontsize=16,
         fontweight="bold",
-        pad=12,
+        loc="left",
+        pad=16,
     )
     # 不添加 y 轴标题，图表标题已足够说明
     ax_main.tick_params(colors=TEXT_COLOR, labelsize=9)
@@ -436,8 +456,10 @@ async def _generate_line_chart(
     # X 轴时间格式
     _auto_format_xaxis(ax_main, timestamps)
 
-    for spine in ax_main.spines.values():
-        spine.set_color(GRID_COLOR)
+    ax_main.spines["top"].set_visible(False)
+    ax_main.spines["right"].set_visible(False)
+    ax_main.spines["left"].set_color(GRID_COLOR)
+    ax_main.spines["bottom"].set_color(GRID_COLOR)
 
     # --- 头像面板 ---
     if has_players and ax_heads is not None:
@@ -448,9 +470,10 @@ async def _generate_line_chart(
         ax_heads.set_title(
             _chart_text("本时段在线过的玩家", "Players active in this period"),
             color=TEXT_COLOR,
-            fontsize=10,
+            fontsize=11,
+            fontweight="bold",
             loc="left",
-            pad=4,
+            pad=8,
         )
 
         _draw_head_grid(ax_heads, all_players_list, heads, heads_per_row)
@@ -496,6 +519,11 @@ async def _generate_gantt_chart(
     # 收集需要标注的时间信息（延迟到 axes 配置后绘制）
     _time_annotations: list[tuple[float, float, int, str, str]] = []
 
+    # 斑马纹背景
+    for i in range(n_players):
+        if i % 2 == 1:
+            ax.axhspan(i - 0.5, i + 0.5, facecolor="#ffffff", alpha=0.03, zorder=0)
+
     # 绘制每个玩家的在线条
     for i, player in enumerate(players_sorted):
         color = GANTT_COLORS[i % len(GANTT_COLORS)]
@@ -508,6 +536,20 @@ async def _generate_gantt_chart(
                 display_end = start + timedelta(minutes=5)
 
             bar_width = mdates.date2num(display_end) - mdates.date2num(start)
+            
+            # 阴影层
+            ax.barh(
+                i + 0.06,  # 阴影轻微向下偏移 (因为Y轴反转了，+表示视觉上向下排)
+                bar_width,
+                left=mdates.date2num(start),
+                height=0.6,
+                color="#000000",
+                alpha=0.3,
+                edgecolor="none",
+                zorder=1,
+            )
+            
+            # 实际数据条
             ax.barh(
                 i,
                 bar_width,
@@ -515,8 +557,9 @@ async def _generate_gantt_chart(
                 height=0.6,
                 color=color,
                 alpha=0.85,
-                edgecolor=color,
-                linewidth=0.5,
+                edgecolor="none",
+                linewidth=0,
+                zorder=2,
             )
 
             # 记录标注信息
@@ -579,9 +622,10 @@ async def _generate_gantt_chart(
             duration=duration_label,
         ),
         color=TEXT_COLOR,
-        fontsize=14,
+        fontsize=16,
         fontweight="bold",
-        pad=12,
+        loc="left",
+        pad=16,
     )
 
     ax.xaxis_date()
@@ -589,15 +633,17 @@ async def _generate_gantt_chart(
 
     ax.tick_params(axis="x", colors=TEXT_COLOR, labelsize=9)
     ax.tick_params(axis="y", colors=TEXT_COLOR, labelsize=9)
-    ax.grid(True, which="major", axis="x", color=GRID_COLOR, alpha=0.5, linewidth=0.5)
-    ax.grid(True, which="minor", axis="x", color=GRID_COLOR, alpha=0.2, linewidth=0.3)
+    ax.grid(True, which="major", axis="x", color=GRID_COLOR, alpha=0.5, linewidth=0.5, zorder=0)
+    ax.grid(True, which="minor", axis="x", color=GRID_COLOR, alpha=0.2, linewidth=0.3, zorder=0)
     ax.minorticks_on()
     ax.tick_params(axis="y", which="minor", left=False)
     ax.set_axisbelow(True)
     ax.invert_yaxis()
 
-    for spine in ax.spines.values():
-        spine.set_color(GRID_COLOR)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_color(GRID_COLOR)
 
     # 绘制延迟的时间标注（此时 axes 变换已就绪）
     fig.canvas.draw()  # 确保 transData 准确
