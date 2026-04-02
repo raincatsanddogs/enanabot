@@ -66,6 +66,43 @@ nb run --reload
 
 运行状态文件：`configs/mineflayer_js_bridge.runtime.json`
 
+## 4. matplotlib 中文字体（Windows / Linux）
+
+如果图表出现中文乱码或日志提示缺字，请安装任一中文字体（推荐 `Noto Sans CJK SC`）。
+
+### Windows
+
+1. 下载字体（任选其一）
+- Noto Sans CJK SC（推荐）
+- 微软雅黑（Microsoft YaHei）
+- 黑体（SimHei）
+
+2. 安装字体
+- 双击字体文件（`.ttf` / `.otf`）
+- 点击“为所有用户安装”（推荐）
+
+3. 重启 bot 进程
+
+### Ubuntu / Debian
+
+```bash
+sudo apt-get update
+sudo apt-get install -y fonts-noto-cjk fonts-wqy-zenhei
+fc-cache -f -v
+```
+
+安装完成后重启 bot 进程。
+
+### 验证字体是否被 matplotlib 识别
+
+在项目虚拟环境中执行：
+
+```bash
+python -c "from matplotlib import font_manager; fs={f.name for f in font_manager.fontManager.ttflist}; print([x for x in ['Microsoft YaHei','SimHei','Noto Sans CJK SC','WenQuanYi Zen Hei'] if x in fs])"
+```
+
+输出列表非空即表示已识别到可用中文字体。
+
 ## 文档
 
 - NoneBot 文档：[https://nonebot.dev/](https://nonebot.dev/)

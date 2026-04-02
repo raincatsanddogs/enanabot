@@ -23,6 +23,7 @@ import matplotlib
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import font_manager
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from nonebot import logger, on_command
 from nonebot.adapters import Message
@@ -72,16 +73,44 @@ GANTT_COLORS = [
     "#748ffc",  # 靛蓝
 ]
 
-# 中文字体（Windows）
-plt.rcParams["font.sans-serif"] = [
+# 常见中文字体候选（跨平台）
+PREFERRED_CJK_FONTS = [
     "Microsoft YaHei",
     "SimHei",
-    "DejaVu Sans",
-    "sans-serif",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Noto Sans CJK SC",
+    "WenQuanYi Zen Hei",
+    "Source Han Sans SC",
+    "Arial Unicode MS",
 ]
+
+
+def _configure_matplotlib_fonts() -> bool:
+    """配置 matplotlib 字体，返回是否可用中文字体。"""
+    available = {font.name for font in font_manager.fontManager.ttflist}
+    matched = [name for name in PREFERRED_CJK_FONTS if name in available]
+
+    if matched:
+        plt.rcParams["font.sans-serif"] = [*matched, "DejaVu Sans", "sans-serif"]
+        logger.info(f"player_stats 使用中文字体: {matched[0]}")
+        return True
+
+    # 没有可用中文字体时回退英文文案，避免中文缺字告警。
+    plt.rcParams["font.sans-serif"] = ["DejaVu Sans", "sans-serif"]
+    logger.warning("player_stats 未检测到可用中文字体，将使用英文图表文案。")
+    return False
+
+
+CJK_FONT_AVAILABLE = _configure_matplotlib_fonts()
 plt.rcParams["axes.unicode_minus"] = False
 
 list_cmd = on_command("list", rule=to_me(), priority=5)
+
+
+def _chart_text(cn: str, en: str) -> str:
+    """根据字体可用性选择中英文图表文案。"""
+    return cn if CJK_FONT_AVAILABLE else en
 
 
 # ===== 指令处理 =====
@@ -160,6 +189,16 @@ def _format_duration(seconds: int) -> str:
     days = seconds // 86400
     hours = (seconds % 86400) // 3600
     minutes = (seconds % 3600) // 60
+
+    if not CJK_FONT_AVAILABLE:
+        parts_en: list[str] = []
+        if days > 0:
+            parts_en.append(f"{days}d")
+        if hours > 0:
+            parts_en.append(f"{hours}h")
+        if minutes > 0:
+            parts_en.append(f"{minutes}m")
+        return " ".join(parts_en) if parts_en else "24h"
 
     parts: list[str] = []
     if days > 0:
@@ -283,13 +322,15 @@ async def _generate_line_chart(
 
     # 样式
     ax_main.set_title(
-        f"📊 在线人数统计（最近 {duration_label}）",
+        _chart_text("在线人数统计（最近 {duration}）", "Online Players (last {duration})").format(
+            duration=duration_label,
+        ),
         color=TEXT_COLOR,
         fontsize=14,
         fontweight="bold",
         pad=12,
     )
-    ax_main.set_ylabel("在线人数", color=TEXT_COLOR, fontsize=11)
+    ax_main.set_ylabel(_chart_text("在线人数", "Online Players"), color=TEXT_COLOR, fontsize=11)
     ax_main.tick_params(colors=TEXT_COLOR, labelsize=9)
     ax_main.grid(True, color=GRID_COLOR, alpha=0.5, linewidth=0.5)
     ax_main.set_xlim(timestamps[0], timestamps[-1])
@@ -312,7 +353,7 @@ async def _generate_line_chart(
         ax_heads.set_ylim(0, 1)
         ax_heads.axis("off")
         ax_heads.set_title(
-            "本时段在线过的玩家",
+            _chart_text("本时段在线过的玩家", "Players active in this period"),
             color=TEXT_COLOR,
             fontsize=10,
             loc="left",
@@ -417,7 +458,9 @@ async def _generate_gantt_chart(
 
     # 样式
     ax.set_title(
-        f"📊 玩家在线时段（最近 {duration_label}）",
+        _chart_text("玩家在线时段（最近 {duration}）", "Player Sessions (last {duration})").format(
+            duration=duration_label,
+        ),
         color=TEXT_COLOR,
         fontsize=14,
         fontweight="bold",
