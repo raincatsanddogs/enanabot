@@ -17,7 +17,7 @@ import io
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +86,9 @@ GANTT_COLORS = [
     "#ff8787",  # 浅红
     "#748ffc",  # 靛蓝
 ]
+
+# list 图表统一使用 UTC+8 显示时间
+DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
 
 # 常见中文字体候选（跨平台）
 PREFERRED_CJK_FONTS = [
@@ -318,7 +321,7 @@ def _compute_sessions(
         current_players = set(record.get("p", []))
 
         for player in current_players:
-            dt_now = datetime.fromtimestamp(t, tz=timezone.utc)
+            dt_now = datetime.fromtimestamp(t, tz=DISPLAY_TIMEZONE)
 
             if player in last_seen:
                 gap = t - last_seen[player]
@@ -353,7 +356,7 @@ async def _generate_line_chart(
     """生成在线人数折线图（含玩家头像面板）。"""
     records_sorted = sorted(records, key=lambda r: r["t"])
 
-    timestamps = [datetime.fromtimestamp(r["t"], tz=timezone.utc) for r in records_sorted]
+    timestamps = [datetime.fromtimestamp(r["t"], tz=DISPLAY_TIMEZONE) for r in records_sorted]
     counts = [len(r.get("p", [])) for r in records_sorted]
 
     # 收集所有出现过的玩家
@@ -492,8 +495,6 @@ async def _generate_gantt_chart(
         for start, end in player_sessions:
             # 单点快照（仅出现一次）：扩展到 5 分钟显示宽度
             if start == end:
-                from datetime import timedelta
-
                 end = start + timedelta(minutes=5)
 
             bar_width = mdates.date2num(end) - mdates.date2num(start)
@@ -654,17 +655,17 @@ def _auto_format_xaxis(
         span = 86400  # 默认 1 天
 
     if span <= 3600 * 3:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-        ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=15))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=15, tz=DISPLAY_TIMEZONE))
     elif span <= 86400:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2, tz=DISPLAY_TIMEZONE))
     elif span <= 86400 * 7:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=12))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M", tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=12, tz=DISPLAY_TIMEZONE))
     else:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
-        ax.xaxis.set_major_locator(mdates.DayLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d", tz=DISPLAY_TIMEZONE))
+        ax.xaxis.set_major_locator(mdates.DayLocator(tz=DISPLAY_TIMEZONE))
 
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
 

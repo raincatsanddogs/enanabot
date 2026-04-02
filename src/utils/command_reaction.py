@@ -6,7 +6,7 @@ from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
 
 EMOJI_STATUS_PROCESSING = "424"
-EMOJI_STATUS_SUCCESS = "287"
+EMOJI_STATUS_SUCCESS = "297"
 EMOJI_STATUS_FAILED = "128560"
 
 _STATUS_EMOJIS = [
