@@ -11,6 +11,55 @@ function build_forward_prefix_regex(prefix) {
     return new RegExp(`${escape_regex(normalized)}\\s*`);
 }
 
+function extract_text_component(node) {
+    if (node === null || node === undefined) return '';
+    if (typeof node === 'string') return node;
+    if (typeof node !== 'object') return '';
+
+    let result = '';
+    if (typeof node.text === 'string') {
+        result += node.text;
+    } else if (typeof node[''] === 'string') {
+        result += node[''];
+    }
+
+    if (Array.isArray(node.extra)) {
+        for (const part of node.extra) {
+            result += extract_text_component(part);
+        }
+    }
+
+    return result;
+}
+
+function summarize_component_shape(component) {
+    if (component === null) return 'null';
+    if (component === undefined) return 'undefined';
+    if (typeof component !== 'object') return typeof component;
+    const keys = Object.keys(component).slice(0, 8);
+    return `keys:[${keys.join(',')}]`;
+}
+
+function get_chat_param_chunks(extras) {
+    if (!Array.isArray(extras)) {
+        throw new Error('Invalid chat message: json.extra is not an array');
+    }
+
+    const legacy_chunk = extras[1] && extras[1].extra;
+    if (Array.isArray(legacy_chunk)) {
+        return legacy_chunk;
+    }
+
+    const compact_chunk = extras[0] && extras[0].extra;
+    if (Array.isArray(compact_chunk)) {
+        return compact_chunk;
+    }
+
+    throw new Error(
+        `Invalid chat message structure: missing payload extra (len=${extras.length}, first=${summarize_component_shape(extras[0])}, second=${summarize_component_shape(extras[1])})`
+    );
+}
+
 function handle_message(jsonMsg, options = {}) {
     try {
         const time_stamp = new Date().toISOString();
@@ -59,18 +108,11 @@ function text_define(jsonMsg) {
     if (jsonMsg.translate || (jsonMsg.json && jsonMsg.json.translate)) return undefined;
 
     const json = jsonMsg.json || {};
-    const extras = json.extra || [];
-    let result = json.text || '';
+    const extras = Array.isArray(json.extra) ? json.extra : [];
+    let result = (typeof json.text === 'string') ? json.text : '';
 
     for (const item of extras) {
-        if (item.extra) {
-            for (const sub of item.extra) {
-                if (typeof sub === 'string') { result += sub; continue; }
-                result += sub.text || sub[''] || '';
-            }
-        } else {
-            result += item.text || item[''] || '';
-        }
+        result += extract_text_component(item);
     }
 
     return result;
@@ -119,7 +161,7 @@ function type_define(jsonMsg) {
     }
 
     // server_chat：QQ 群桥接，提取 extras 一级文本判断
-    const flat_text = extras.map(item => item.text || item[''] || '').join('');
+    const flat_text = extras.map(item => extract_text_component(item)).join('');
     if (flat_text.includes('Q群')) return 'server_chat';
 
     // 兜底：服务器插件消息
@@ -220,7 +262,8 @@ function params_define(type, jsonMsg) {
     }
 
     if (type === 'chat') {
-        return [jsonMsg.json.extra[1].extra];
+        const extras = (jsonMsg.json && jsonMsg.json.extra);
+        return [get_chat_param_chunks(extras)];
     }
 
     if (type === 'tpa') {
@@ -361,17 +404,13 @@ function extract_chat_info(jsonMsg) {
         }
 
         // 提取聊天文本：extras[1] 及之后的内容
+        const payload_nodes = extras.length > 1
+            ? extras.slice(1)
+            : (Array.isArray(first.extra) ? first.extra : []);
+
         let chat_text = '';
-        for (let i = 1; i < extras.length; i++) {
-            const item = extras[i];
-            if (item.extra) {
-                for (const sub of item.extra) {
-                    if (typeof sub === 'string') { chat_text += sub; continue; }
-                    chat_text += sub.text || sub[''] || '';
-                }
-            } else {
-                chat_text += item.text || item[''] || '';
-            }
+        for (const node of payload_nodes) {
+            chat_text += extract_text_component(node);
         }
 
         if (!sender_name) return null;
