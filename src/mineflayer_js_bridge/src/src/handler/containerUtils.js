@@ -7,6 +7,13 @@
 
 const nbt = require('prismarine-nbt');
 
+const HOME_PARSE_DEBUG = process.env.HOME_PARSE_DEBUG === '1';
+
+function debugHomeParse(message) {
+    if (!HOME_PARSE_DEBUG) return;
+    console.error(`[home-parse] ${message}`);
+}
+
 /**
  * 延迟执行
  * @param {number} ms - 毫秒数
@@ -139,18 +146,49 @@ function getItemLabel(item) {
  * @param {object|null} item - 物品对象
  * @returns {boolean}
  */
-function isNavigationItem(item) {
-    const label = getItemLabel(item).toLowerCase();
+function isNavigationItem(item, labelText) {
+    const labelRaw = typeof labelText === 'string' ? labelText : getItemLabel(item);
+    const label = String(labelRaw || '').toLowerCase().trim();
     const name = (item && item.name ? item.name.toLowerCase() : '');
-    return (
-        name.includes('arrow') ||
-        label.includes('next') ||
-        label.includes('prev') ||
-        label.includes('page') ||
-        label.includes('back') ||
+
+    const isExplicitPageLabel = (
+        label === '下一页' ||
+        label === '上一页' ||
+        label === 'next' ||
+        label === 'prev' ||
+        label === 'next page' ||
+        label === 'prev page' ||
+        label === 'previous page' ||
+        label === 'back' ||
+        label === '返回'
+    );
+
+    const hasPageKeyword = (
+        /\b(next|prev|previous|page)\b/.test(label) ||
         label.includes('下一页') ||
         label.includes('上一页')
     );
+
+    if (name.includes('arrow') && (hasPageKeyword || isExplicitPageLabel)) {
+        return true;
+    }
+
+    return isExplicitPageLabel;
+}
+
+function normalizeHomeName(label) {
+    if (typeof label !== 'string') return '';
+
+    const text = label.trim();
+    if (!text) return '';
+
+    const teleportMatch = text.match(/点击传送至\s+([^|\s]+)/);
+    if (teleportMatch && teleportMatch[1]) {
+        return teleportMatch[1].trim();
+    }
+
+    const firstSegment = text.split('|')[0].trim();
+    return firstSegment.replace(/^点击传送至\s+/i, '').trim();
 }
 
 /**
@@ -215,26 +253,34 @@ function extractHomes(window) {
             continue;
         }
 
+        const label = getItemLabel(item);
+
         // 跳过边框装饰物品
         if (isBorderItem(item)) {
+            debugHomeParse(`skip border slot=${idx}, name=${item.name || ''}, label=${label}`);
             continue;
         }
 
         // 跳过 GUI 功能按钮
         if (isGuiButton(item)) {
+            debugHomeParse(`skip gui slot=${idx}, name=${item.name || ''}, label=${label}`);
             continue;
         }
 
         // 跳过导航按钮
-        if (isNavigationItem(item)) {
+        if (isNavigationItem(item, label)) {
+            debugHomeParse(`skip nav slot=${idx}, name=${item.name || ''}, label=${label}`);
             continue;
         }
 
-        const label = getItemLabel(item);
-        if (label) {
-            homes.push(label);
+        const homeName = normalizeHomeName(label);
+        if (homeName) {
+            homes.push(homeName);
+            debugHomeParse(`collect slot=${idx}, name=${item.name || ''}, home=${homeName}`);
         }
     }
+
+    debugHomeParse(`extractHomes collected=${homes.length}`);
     return homes;
 }
 
@@ -270,15 +316,21 @@ function findNextSlot(window) {
 function findHomeSlot(window, homeName) {
     if (!window || !Array.isArray(window.slots)) return null;
 
+    const targetName = String(homeName || '').trim();
+    if (!targetName) return null;
+
     const totalSlots = window.slots.length;
     const containerSlots = Math.max(0, totalSlots - 36);
 
     for (let idx = 0; idx < containerSlots; idx++) {
         const item = window.slots[idx];
-        if (!item || isBorderItem(item) || isGuiButton(item) || isNavigationItem(item)) continue;
+        if (!item) continue;
 
-        const label = getItemLabel(item);
-        if (label === homeName) {
+        const labelRaw = getItemLabel(item);
+        if (isBorderItem(item) || isGuiButton(item) || isNavigationItem(item, labelRaw)) continue;
+
+        const label = normalizeHomeName(labelRaw);
+        if (label === targetName || label.toLowerCase() === targetName.toLowerCase()) {
             return idx;
         }
     }
@@ -340,6 +392,8 @@ async function listHomes(bot) {
     if (bot.currentWindow) {
         bot.closeWindow(bot.currentWindow);
     }
+
+    debugHomeParse(`listHomes final_count=${homes.size}, homes=${JSON.stringify([...homes])}`);
 
     return [...homes];
 }

@@ -16,6 +16,7 @@ const TPA_STATE = {
 };
 
 let HOME_COMMAND_QUEUE = Promise.resolve();
+let HOME_OPERATION_ACTIVE_COUNT = 0;
 
 const QQ_FORWARD_PREFIX = (typeof config.forward_prefix === 'string' && config.forward_prefix.trim())
     ? config.forward_prefix.trim()
@@ -50,6 +51,132 @@ function build_forward_message(message) {
     }
 
     return `${QQ_FORWARD_PREFIX} ${normalized}`;
+}
+
+function normalize_command_text(raw_text) {
+    if (typeof raw_text !== 'string') {
+        return '';
+    }
+
+    return raw_text
+        .replace(/\u00A7[0-9A-FK-OR]/ig, '')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .trim();
+}
+
+function parse_prefixed_command(raw_text) {
+    const text = normalize_command_text(raw_text);
+    if (!text) {
+        return null;
+    }
+
+    const prefix = (typeof config.whisper_command_prefix === 'string' && config.whisper_command_prefix.trim())
+        ? config.whisper_command_prefix.trim()
+        : '#';
+
+    if (!text.startsWith(prefix)) {
+        return null;
+    }
+
+    const body = text.slice(prefix.length).trim();
+    if (!body) {
+        return null;
+    }
+
+    const parts = body.split(/\s+/);
+    return {
+        command: parts[0].toLowerCase(),
+        args: parts.slice(1),
+        normalized_text: `${prefix}${body}`,
+    };
+}
+
+function is_home_operation_active() {
+    return HOME_OPERATION_ACTIVE_COUNT > 0;
+}
+
+async function with_home_operation_scope(task) {
+    HOME_OPERATION_ACTIVE_COUNT += 1;
+    try {
+        return await task();
+    } finally {
+        HOME_OPERATION_ACTIVE_COUNT = Math.max(0, HOME_OPERATION_ACTIVE_COUNT - 1);
+    }
+}
+
+function is_home_related_chat_message(post_msg) {
+    if (!post_msg || typeof post_msg !== 'object') {
+        return false;
+    }
+
+    const text = normalize_command_text(post_msg.text || '');
+    if (!text) {
+        return false;
+    }
+
+    return (
+        text.includes('点击传送至') ||
+        text.includes('Shift+右键来移除家') ||
+        text.includes('按 Q 编辑') ||
+        /^#\d+:\s*x\d+/i.test(text)
+    );
+}
+
+function normalize_home_list(result) {
+    if (!Array.isArray(result)) {
+        return null;
+    }
+
+    const names = [];
+    for (const entry of result) {
+        if (typeof entry === 'string') {
+            const name = entry.trim();
+            if (name) {
+                names.push(name);
+            }
+            continue;
+        }
+
+        if (entry && typeof entry === 'object') {
+            const candidate = [entry.name, entry.label, entry.home, entry.title]
+                .find((item) => typeof item === 'string' && item.trim());
+            if (candidate) {
+                names.push(candidate.trim());
+            }
+        }
+    }
+
+    return [...new Set(names)];
+}
+
+function stringify_error(err) {
+    if (err === undefined || err === null) {
+        return '未知错误';
+    }
+
+    if (typeof err === 'string') {
+        return err;
+    }
+
+    if (Array.isArray(err)) {
+        const parts = err
+            .map((item) => stringify_error(item))
+            .filter((item) => typeof item === 'string' && item.trim());
+        return parts.length > 0 ? parts.join(', ') : '未知错误';
+    }
+
+    if (typeof err === 'object') {
+        if (typeof err.message === 'string' && err.message.trim()) {
+            return err.message.trim();
+        }
+        try {
+            return JSON.stringify(err);
+        } catch {
+            return String(err);
+        }
+    }
+
+    return String(err);
 }
 
 // ===== sethome Promise 校验 =====
@@ -222,19 +349,20 @@ function enqueue_home_command(bot, data) {
 }
 
 function format_home_whisper_message(command, success, result, error, name) {
-    const errMsg = error || '未知错误';
+    const errMsg = stringify_error(error);
 
     if (command === 'list') {
         if (!success) {
             return `获取 home 列表失败: ${errMsg}`;
         }
-        if (Array.isArray(result)) {
-            if (result.length === 0) {
-                return '没有设置任何 home';
-            }
-            return `Home 列表: ${result.join(', ')}`;
+        const homes = normalize_home_list(result);
+        if (homes && homes.length > 0) {
+            return `Home 列表: ${homes.join(', ')}`;
         }
-        return `Home 列表: ${result}`;
+        if (typeof result === 'string' && result.trim()) {
+            return `Home 列表: ${result.trim()}`;
+        }
+        return '没有设置任何 home';
     }
 
     if (command === 'tp') {
@@ -313,19 +441,23 @@ async function execute_home_operation(bot, command, name) {
     const { listHomes, tpToHome } = require('./src/handler/containerUtils');
 
     if (command === 'list') {
-        const homes = await listHomes(bot);
-        return {
-            success: true,
-            result: homes,
-        };
+        return with_home_operation_scope(async () => {
+            const homes = await listHomes(bot);
+            return {
+                success: true,
+                result: homes,
+            };
+        });
     }
 
     if (command === 'tp') {
-        await tpToHome(bot, name);
-        return {
-            success: true,
-            result: name,
-        };
+        return with_home_operation_scope(async () => {
+            await tpToHome(bot, name);
+            return {
+                success: true,
+                result: name,
+            };
+        });
     }
 
     if (command === 'set') {
@@ -635,10 +767,15 @@ async function main() {
                 const whisper_info = extract_whisper_info(jsonMsg);
                 if (!whisper_info) return; // 非入站私聊或解析失败
 
+                const parsed_whisper_command = parse_prefixed_command(whisper_info.whisper_text);
+                const normalized_whisper_text = parsed_whisper_command
+                    ? parsed_whisper_command.normalized_text
+                    : normalize_command_text(whisper_info.whisper_text);
+
                 // 先尝试 JS 端内部指令
                 const intercepted = await dispatch_command(
                     whisper_info.player_name,
-                    whisper_info.whisper_text,
+                    normalized_whisper_text,
                     'whisper'
                 );
 
@@ -647,12 +784,18 @@ async function main() {
                     return;
                 }
 
+                // home 指令必须在 JS 本地闭环，不再回退到 Python。
+                if (parsed_whisper_command && parsed_whisper_command.command === 'home') {
+                    console.warn('[home] dispatch 未拦截，已阻止 home 指令回退到 Python');
+                    return;
+                }
+
                 // 未被 JS 端拦截 → 发送到 Python 端处理 whisper 指令
                 // 复用原有的 whisperCommandHandler 解析逻辑
                 const { handleWhisperCommand } = require('./src/handler/whisperCommandHandler');
                 const cmdResult = handleWhisperCommand(
                     whisper_info.player_name,
-                    whisper_info.whisper_text,
+                    normalized_whisper_text,
                     config
                 );
 
@@ -669,9 +812,14 @@ async function main() {
             if (post_msg.type === 'chat') {
                 const chat_info = extract_chat_info(jsonMsg);
                 if (chat_info && chat_info.sender_name && chat_info.chat_text) {
+                    const parsed_chat_command = parse_prefixed_command(chat_info.chat_text);
+                    const normalized_chat_text = parsed_chat_command
+                        ? parsed_chat_command.normalized_text
+                        : normalize_command_text(chat_info.chat_text);
+
                     const intercepted = await dispatch_command(
                         chat_info.sender_name,
-                        chat_info.chat_text,
+                        normalized_chat_text,
                         'chat'
                     );
 
@@ -680,6 +828,11 @@ async function main() {
                         return;
                     }
                 }
+            }
+
+            // Home 本地操作期间，抑制 home 列表相关的系统聊天行，避免噪声推送给 Python。
+            if (is_home_operation_active() && is_home_related_chat_message(post_msg)) {
+                return;
             }
 
             // 非 whisper 消息（且未被内部指令拦截），使用统一 IPC 格式输出到 Py 端
