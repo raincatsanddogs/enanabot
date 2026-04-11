@@ -46,10 +46,27 @@ _HIDDEN_PLUGINS: set[str] = {
 _GROUP_ORDER: list[str] = [
     "通用",
     "MC",
+    "MC-JS内置",
     "管理",
     "其他",
 ]
-
+# 临时做法
+# 最少改动方案：静态补充 JS 内置指令，避免改 IPC 与 JS 侧目录上报。
+_STATIC_COMMANDS: dict[str, list[tuple[str, str, str]]] = {
+    "MC-JS内置": [
+        (
+            "tpa",
+            "TPA 控制（JS 内置）",
+            "#tpa [status|on|off|back]",
+        ),
+        (
+            "home",
+            "Home 管理（JS 内置）",
+            "#home <list|tp|set|remove> [名称]",
+        ),
+    ]
+}
+# end
 help_cmd = on_command("help", rule=to_me_or_prefix(), aliases={"帮助"}, priority=5)
 
 
@@ -75,6 +92,10 @@ async def handle_help(bot: Bot, event: MessageEvent) -> None:
         group = (meta.extra or {}).get("group", "其他")
 
         groups.setdefault(group, []).append((name, description, usage))
+
+    # 补充静态命令项，临时做法
+    for group_name, entries in _STATIC_COMMANDS.items():
+        groups.setdefault(group_name, []).extend(entries)
 
     # 按配置顺序排列分组
     sorted_groups: list[tuple[str, list[tuple[str, str, str]]]] = []

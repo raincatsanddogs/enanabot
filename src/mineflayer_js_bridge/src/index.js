@@ -746,16 +746,34 @@ echo.handle(async (session) => {
     await session.finish(`${response}`);
 });
 
+const perm = on_command('perm', { permission: 'admin', description: '权限测试指令' });
+perm.handle(async (session) => {
+    await session.finish(`当前权限: ${session.permission}`);
+});
+
+/*
+
+*/
+const send = on_command('send', { permission: 'admin', description: '发送任意文本到聊天框' });
+send.handle(async (session) => {
+    const text = session.args.join(' ');
+    if (!text) {
+        await session.finish('用法: #send <文本>');
+    }
+    session.bot.chat(text);
+    await session.finish(`已发送: ${text}`);
+});
+
 const help = on_command('help', { permission: 'guest', description: '显示帮助信息' });
 help.handle(async (session) => {
     const sub = session.args[0];
     if (!sub) {
-        response = '可用指令: tpa, home, echo, help。使用 "#help <指令名>" 查看指令详情。';
+        response = '可用指令: tpa, home, echo, help, perm, send。使用 "#help <指令名>" 查看指令详情。';
         await session.finish(response);
     }
     switch (sub) {
         case 'tpa':
-            await session.finish('tpa 指令: 查看 TPA 状态。\n用法: #tpa [status|on|off|back]\n子指令 status: 查看状态；\n on: 开启自动接受；\n off: 关闭自动接受；\n back: 释放占用');
+            await session.finish('tpa 指令: 查看 TPA 状态\n 用法: #tpa [status|on|off|back]\n 子指令 status: 查看状态；\n on: 开启自动接受；\n off: 关闭自动接受；\n back: 释放占用');
             break;
         case 'home':
             await session.finish('home 指令: 管理 home。\n用法: #home <list|tp|set|remove> [名称]\n非 admin 仅可使用 list。');
@@ -765,6 +783,12 @@ help.handle(async (session) => {
             break;
         case 'help':
             await session.finish('help 指令: 显示帮助信息。用法: #help <指令名>');
+            break;
+        case 'perm':
+            await session.finish('perm 指令: 显示当前权限。用法: #perm');
+            break;
+        case 'send':
+            await session.finish('send 指令: 发送任意文本到聊天框。用法: #send <文本>');
             break;
     }
 });
