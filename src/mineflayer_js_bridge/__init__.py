@@ -48,7 +48,9 @@ sub_plugins = nonebot.load_plugins(
     str(Path(__file__).parent.joinpath("plugins").resolve())
 )
 
-mc = on_command("mc", rule=to_me_or_prefix(), aliases={"connect"}, priority=5, permission=ADMIN)
+mc = on_command("mc", rule=to_me_or_prefix(), aliases={"minecraft"}, priority=5, permission=ADMIN)
+tpa_cmd = on_command("tpa", rule=to_me_or_prefix(), priority=5, permission=ADMIN)
+home_cmd = on_command("home", rule=to_me_or_prefix(), priority=5, permission=ADMIN)
 bridge_input = on_message(priority=20, block=False)
 JS_START_DELAY_SECONDS = 1
 
@@ -70,14 +72,60 @@ RUNTIME_STATE_DEFAULT: dict[str, bool | str | int | None] = {
     "target_id": None,
 }
 
+# ===== TPA 状态管理 =====
+TPA_STATE_PATH = (
+    Path(__file__).resolve().parents[2] / "configs" / "tpa_state.json"
+)
+TPA_STATE_DEFAULT: dict[str, bool | str | None] = {
+    "enabled": False,
+    "occupied": False,
+    "occupied_by": None,
+    "has_backup_home": False,
+}
+TPA_STATE: dict[str, bool | str | None] = TPA_STATE_DEFAULT.copy()
+
+# Home 命令结果等待（用于异步 IPC 响应）
+HOME_RESULT_PENDING: dict[str, asyncio.Future] = {}
+
+
+def _load_tpa_state() -> dict[str, bool | str | None]:
+    """从 JSON 文件加载 TPA 状态，文件不存在时返回默认值。"""
+    if not TPA_STATE_PATH.exists():
+        return TPA_STATE_DEFAULT.copy()
+    try:
+        with TPA_STATE_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {**TPA_STATE_DEFAULT, **data}
+    except Exception as e:
+        logger.warning(f"Failed to load TPA state: {e}")
+    return TPA_STATE_DEFAULT.copy()
+
+
+def _save_tpa_state() -> None:
+    """保存当前 TPA 状态到 JSON 文件。"""
+    try:
+        TPA_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with TPA_STATE_PATH.open("w", encoding="utf-8") as f:
+            json.dump(TPA_STATE, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save TPA state: {e}")
+
 # ===== 统一 IPC 协议常量 =====
 # Py → JS
 IPC_ACTION_QQ_MESSAGE = "qq_message"
 IPC_ACTION_WHISPER_REPLY = "whisper_reply"
+IPC_ACTION_TPA_UPDATE_STATE = "tpa_update_state"
+IPC_ACTION_HOME_COMMAND = "home_command"
 # JS → Py
 IPC_ACTION_MC_MESSAGE = "mc_message"
 IPC_ACTION_WHISPER_COMMAND = "whisper_command"
 IPC_ACTION_PLAYER_LIST = "player_list"
+IPC_ACTION_TPA_OCCUPIED = "tpa_occupied"
+IPC_ACTION_TPA_REQUEST_DETECTED = "tpa_request_detected"
+IPC_ACTION_HOME_RESULT = "home_result"
+IPC_ACTION_REQUEST_TPA_STATE = "request_tpa_state"
+IPC_ACTION_TPA_NOTIFICATION = "tpa_notification"
 
 
 def _ipc_encode(action: str, data: dict[str, object]) -> str:
@@ -116,7 +164,7 @@ def _ipc_decode(line: str) -> dict[str, object] | None:
 # ===== 指令权限定义 =====
 # admin+: 可执行所有指令
 # user: 仅可执行此白名单中的指令
-USER_ALLOWED_COMMANDS: set[str] = {"mc status"}
+USER_ALLOWED_COMMANDS: set[str] = {"mc status", "tpa status", "tpa back", "home list"}
 
 
 # ===== 统一指令调度器 =====
@@ -124,6 +172,7 @@ async def dispatch_command(
     command: str,
     args: list[str],
     permission_level: str | PermissionLevel,
+    player_name: str | None = None,
 ) -> str:
     """
     统一指令入口。QQ 群指令和 MC whisper 指令共用此函数。
@@ -150,6 +199,14 @@ async def dispatch_command(
     # mc 指令
     if command == "mc":
         return await _dispatch_mc_command(args)
+
+    # tpa 指令
+    if command == "tpa":
+        return await _dispatch_tpa_command(args, level, player_name)
+
+    # home 指令
+    if command == "home":
+        return await _dispatch_home_command(args)
 
     # git 指令
     if command == "git":
@@ -243,6 +300,240 @@ async def _execute_git_pull() -> str:
         result_parts.append(log_text)
 
     return "\n".join(result_parts)
+
+
+# ===== TPA 指令处理 =====
+
+async def _dispatch_tpa_command(
+    args: list[str],
+    level: PermissionLevel,
+    player_name: str | None = None,
+) -> str:
+    """处理 tpa 子指令。"""
+    global TPA_STATE
+    
+    if not args:
+        return "用法: tpa <on|off|status|back>"
+    
+    sub = args[0].lower()
+    
+    if sub == "on":
+        if level < PermissionLevel.ADMIN:
+            return "权限不足：需要管理员权限"
+        
+        TPA_STATE["enabled"] = True
+        _save_tpa_state()
+        
+        # 推送状态到 JS
+        await _push_tpa_state_to_js()
+        
+        return "TPA 自动接受已开启"
+    
+    if sub == "off":
+        if level < PermissionLevel.ADMIN:
+            return "权限不足：需要管理员权限"
+        
+        # 如果当前占用，先返回原位
+        if TPA_STATE["occupied"]:
+            try:
+                await _execute_tpa_back()
+            except Exception as e:
+                logger.warning(f"TPA off 时返回原位失败: {e}")
+        
+        TPA_STATE["enabled"] = False
+        TPA_STATE["occupied"] = False
+        TPA_STATE["occupied_by"] = None
+        _save_tpa_state()
+        
+        # 推送状态到 JS
+        await _push_tpa_state_to_js()
+        
+        return "TPA 自动接受已关闭"
+    
+    if sub == "status":
+        enabled_text = "开启" if TPA_STATE["enabled"] else "关闭"
+        occupied_text = f"是（{TPA_STATE['occupied_by']}）" if TPA_STATE["occupied"] else "否"
+        
+        return (
+            f"TPA 状态：\n"
+            f"- 自动接受: {enabled_text}\n"
+            f"- 当前占用: {occupied_text}"
+        )
+    
+    if sub == "back":
+        if not TPA_STATE["occupied"]:
+            return "当前没有占用，无需返回"
+        
+        # 权限检查：占用者本人或 admin
+        is_occupier = (
+            player_name is not None and
+            TPA_STATE["occupied_by"] is not None and
+            player_name.lower() == TPA_STATE["occupied_by"].lower()
+        )
+        
+        if level < PermissionLevel.ADMIN and not is_occupier:
+            return "权限不足：需要管理员权限或占用者本人"
+        
+        try:
+            result = await _execute_tpa_back()
+            return result
+        except Exception as e:
+            return f"返回失败: {e}"
+    
+    return "用法: tpa <on|off|status|back>"
+
+
+async def _push_tpa_state_to_js() -> None:
+    """推送当前 TPA 状态到 JS 侧。"""
+    global js_process
+    
+    if js_process is None or js_process.returncode is not None:
+        return
+    
+    encoded = _ipc_encode(IPC_ACTION_TPA_UPDATE_STATE, {
+        "enabled": TPA_STATE["enabled"],
+        "occupied": TPA_STATE["occupied"],
+        "occupied_by": TPA_STATE["occupied_by"],
+    })
+    
+    try:
+        js_process.stdin.write(encoded.encode("utf-8"))
+        await js_process.stdin.drain()
+    except Exception as e:
+        logger.error(f"推送 TPA 状态到 JS 失败: {e}")
+
+
+async def _execute_tpa_back() -> str:
+    """执行 TPA 返回操作：传送到 tpa_backup 并删除。"""
+    global TPA_STATE
+    
+    # 通过 IPC 请求 JS 执行 home tp
+    try:
+        await _send_home_command("tp", "tpa_backup")
+    except Exception as e:
+        logger.warning(f"传送到 tpa_backup 失败: {e}")
+    
+    # 删除 backup home
+    await _send_home_command("remove", "tpa_backup")
+    
+    # 重置状态
+    TPA_STATE["occupied"] = False
+    TPA_STATE["occupied_by"] = None
+    TPA_STATE["has_backup_home"] = False
+    _save_tpa_state()
+    
+    # 推送状态到 JS
+    await _push_tpa_state_to_js()
+    
+    return "已返回原位置"
+
+
+# ===== Home 指令处理 =====
+
+async def _dispatch_home_command(args: list[str]) -> str:
+    """处理 home 子指令。"""
+    if not args:
+        return "用法: home <list|tp|set|remove> [名称]"
+    
+    sub = args[0].lower()
+    name = args[1] if len(args) > 1 else None
+    
+    if sub == "list":
+        try:
+            result = await _send_home_command("list", timeout=10.0)
+            if result.get("success"):
+                homes = result.get("result", [])
+                if isinstance(homes, list):
+                    if not homes:
+                        return "没有设置任何 home"
+                    return f"Home 列表: {', '.join(homes)}"
+                return f"Home 列表: {homes}"
+            return f"获取 home 列表失败: {result.get('error', '未知错误')}"
+        except asyncio.TimeoutError:
+            return "获取 home 列表超时"
+        except Exception as e:
+            return f"获取 home 列表失败: {e}"
+    
+    if sub == "tp":
+        if not name:
+            # 没有指定名称时，返回 home 列表
+            return await _dispatch_home_command(["list"])
+        
+        try:
+            result = await _send_home_command("tp", name, timeout=10.0)
+            if result.get("success"):
+                return f"已传送到 home: {name}"
+            return f"传送失败: {result.get('error', '未知错误')}"
+        except asyncio.TimeoutError:
+            return "传送超时"
+        except Exception as e:
+            return f"传送失败: {e}"
+    
+    if sub == "set":
+        if not name:
+            return "用法: home set <名称>"
+        
+        try:
+            result = await _send_home_command("set", name, timeout=5.0)
+            if result.get("success"):
+                return f"已设置 home: {name}"
+            return f"设置失败: {result.get('error', '未知错误')}"
+        except asyncio.TimeoutError:
+            return f"已发送设置 home 命令: {name}"
+        except Exception as e:
+            return f"设置失败: {e}"
+    
+    if sub == "remove":
+        if not name:
+            return "用法: home remove <名称>"
+        
+        try:
+            result = await _send_home_command("remove", name, timeout=5.0)
+            if result.get("success"):
+                return f"已删除 home: {name}"
+            return f"删除失败: {result.get('error', '未知错误')}"
+        except asyncio.TimeoutError:
+            return f"已发送删除 home 命令: {name}"
+        except Exception as e:
+            return f"删除失败: {e}"
+    
+    return "用法: home <list|tp|set|remove> [名称]"
+
+
+async def _send_home_command(
+    command: str,
+    name: str | None = None,
+    timeout: float = 10.0,
+    reply_to: str | None = None,
+) -> dict:
+    """发送 home 命令到 JS 并等待结果。"""
+    global js_process
+    
+    if js_process is None or js_process.returncode is not None:
+        raise RuntimeError("JS 进程未运行")
+    
+    # 创建 Future 用于等待结果
+    wait_key = f"{reply_to}:{command}" if reply_to else command
+    future: asyncio.Future = asyncio.get_event_loop().create_future()
+    HOME_RESULT_PENDING[wait_key] = future
+    
+    try:
+        # 发送命令
+        encoded = _ipc_encode(IPC_ACTION_HOME_COMMAND, {
+            "command": command,
+            "name": name,
+            "reply_to": reply_to,
+        })
+        
+        js_process.stdin.write(encoded.encode("utf-8"))
+        await js_process.stdin.drain()
+        
+        # 等待结果
+        result = await asyncio.wait_for(future, timeout=timeout)
+        return result
+    finally:
+        # 清理
+        HOME_RESULT_PENDING.pop(wait_key, None)
 
 
 # ===== 持久化状态管理 =====
@@ -579,6 +870,12 @@ driver = get_driver()
 
 @driver.on_startup
 async def _restore_js_process_on_startup() -> None:
+    global TPA_STATE
+    
+    # 加载 TPA 状态
+    TPA_STATE = _load_tpa_state()
+    logger.info(f"TPA state loaded: enabled={TPA_STATE['enabled']}, occupied={TPA_STATE['occupied']}")
+    
     state = _load_runtime_state()
     if not state["should_start"]:
         return
@@ -652,6 +949,38 @@ async def _(bot: Bot, event: Event, args: Message = CommandArg()):
     else:
         await mc.send("干什么?!")
         await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
+
+
+@tpa_cmd.handle()
+async def _(bot: Bot, event: Event, args: Message = CommandArg()):
+    message_id = getattr(event, "message_id", None)
+    await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
+
+    arg_text = args.extract_plain_text().strip()
+    arg_list = arg_text.split() if arg_text else []
+
+    result = await dispatch_command("tpa", arg_list, PermissionLevel.ADMIN)
+    await tpa_cmd.send(result)
+
+    success = "失败" not in result and "不足" not in result
+    target_emoji = EMOJI_STATUS_SUCCESS if success else EMOJI_STATUS_FAILED
+    await set_status_emoji(bot, message_id, target_emoji)
+
+
+@home_cmd.handle()
+async def _(bot: Bot, event: Event, args: Message = CommandArg()):
+    message_id = getattr(event, "message_id", None)
+    await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
+
+    arg_text = args.extract_plain_text().strip()
+    arg_list = arg_text.split() if arg_text else []
+
+    result = await dispatch_command("home", arg_list, PermissionLevel.ADMIN)
+    await home_cmd.send(result)
+
+    success = "失败" not in result and "超时" not in result
+    target_emoji = EMOJI_STATUS_SUCCESS if success else EMOJI_STATUS_FAILED
+    await set_status_emoji(bot, message_id, target_emoji)
 
 
 @bridge_input.handle()
@@ -738,6 +1067,23 @@ async def read_stdout(process: asyncio.subprocess.Process):
             elif action == IPC_ACTION_PLAYER_LIST:
                 await _handle_player_list(data)
 
+            elif action == IPC_ACTION_TPA_OCCUPIED:
+                await _handle_tpa_occupied(data)
+
+            elif action == IPC_ACTION_TPA_REQUEST_DETECTED:
+                await _handle_tpa_request_detected(data)
+
+            elif action == IPC_ACTION_HOME_RESULT:
+                await _handle_home_result(data)
+
+            elif action == IPC_ACTION_REQUEST_TPA_STATE:
+                await _push_tpa_state_to_js()
+
+            elif action == IPC_ACTION_TPA_NOTIFICATION:
+                msg = data.get("msg", "")
+                if msg:
+                    await _send_bridge_message(f"[插件服]>>{msg}")
+
             else:
                 logger.warning(f"JS 发来未知 IPC action: {action}")
 
@@ -797,7 +1143,7 @@ async def _handle_whisper_command(data: dict[str, object]) -> None:
     logger.info(f"MC whisper 指令: [{permission_level}] {player_name} -> {command} {args}")
 
     try:
-        result = await dispatch_command(command, args, permission_level)
+        result = await dispatch_command(command, args, permission_level, player_name)
     except Exception as e:
         result = f"指令执行失败：{e}"
         logger.error(f"whisper 指令执行异常: {e}")
@@ -821,6 +1167,53 @@ async def _handle_player_list(data: dict[str, object]) -> None:
         record_snapshot(players, str(timestamp), bot_username=str(bot_username))
     except Exception as e:
         logger.error(f"记录玩家快照失败: {e}")
+
+
+async def _handle_tpa_occupied(data: dict[str, object]) -> None:
+    """处理来自 JS 的 tpa_occupied：更新 TPA 占用状态。"""
+    global TPA_STATE
+    
+    occupied_by = data.get("occupied_by", "")
+    tpa_type = data.get("tpa_type", "")
+    
+    TPA_STATE["occupied"] = True
+    TPA_STATE["occupied_by"] = occupied_by
+    TPA_STATE["has_backup_home"] = True
+    _save_tpa_state()
+    
+    logger.info(f"TPA occupied by {occupied_by} (type: {tpa_type})")
+
+
+async def _handle_tpa_request_detected(data: dict[str, object]) -> None:
+    """处理来自 JS 的 tpa_request_detected：记录 TPA 请求日志。"""
+    requester = data.get("requester", "")
+    tpa_type = data.get("type", "")
+    
+    logger.info(f"TPA request detected: {requester} ({tpa_type})")
+
+
+async def _handle_home_result(data: dict[str, object]) -> None:
+    """处理来自 JS 的 home_result：将结果传递给等待的 Future。"""
+    reply_to = data.get("reply_to", "")
+    command = data.get("command", "")
+    
+    # 构造等待键
+    wait_key = f"{reply_to}:{command}" if reply_to else command
+    
+    if wait_key in HOME_RESULT_PENDING:
+        future = HOME_RESULT_PENDING.pop(wait_key)
+        if not future.done():
+            future.set_result(data)
+    else:
+        # 没有等待的 Future，直接记录日志
+        success = data.get("success", False)
+        result = data.get("result")
+        error = data.get("error")
+        
+        if success:
+            logger.info(f"Home command '{command}' succeeded: {result}")
+        else:
+            logger.warning(f"Home command '{command}' failed: {error}")
 
 
 async def read_stderr(process: asyncio.subprocess.Process):

@@ -13,29 +13,29 @@ function buildForwardPrefixRegex(prefix) {
 
 function handleMessage(jsonMsg, options = {}) {
     try {
-    const time_stamp = new Date().toISOString();
-    let type = undefined;
-    const translate = jsonMsg.translate || undefined;
-    const text = text_define(jsonMsg);
-    let params = [];
-    type = type_define(jsonMsg);
-    params = params_define(type,jsonMsg); 
-    const forwardPrefixRegex = buildForwardPrefixRegex(options.forwardPrefix);
+        const time_stamp = new Date().toISOString();
+        let type = undefined;
+        const translate = jsonMsg.translate || undefined;
+        const text = text_define(jsonMsg);
+        let params = [];
+        type = type_define(jsonMsg);
+        params = params_define(type, jsonMsg);
+        const forwardPrefixRegex = buildForwardPrefixRegex(options.forwardPrefix);
 
-    // 过滤由桥接发送后被服务器回显的消息，避免 QQ->MC->QQ 回环。
-    if (type === 'chat' && typeof text === 'string' && forwardPrefixRegex.test(text)) {
-        return null;
-    }
+        // 过滤由桥接发送后被服务器回显的消息，避免 QQ->MC->QQ 回环。
+        if (type === 'chat' && typeof text === 'string' && forwardPrefixRegex.test(text)) {
+            return null;
+        }
 
-    return {
-        time_stamp:time_stamp,
-        type:type, 
-        text:text, 
-        translate:translate, 
-        params:params
-    }; 
+        return {
+            time_stamp: time_stamp,
+            type: type,
+            text: text,
+            translate: translate,
+            params: params
+        };
     } catch (e) {
-        
+
         console.error('处理消息时发生错误:', e);
         throw {
             jsonMsg: jsonMsg,
@@ -121,16 +121,16 @@ function type_define(jsonMsg) {
 }
 
 //
-function params_define(type,jsonMsg) {
+function params_define(type, jsonMsg) {
     if (type === 'join' || type === 'left') {
-        if (jsonMsg.json.with?.[0]?.hasOwnProperty('hover_event')){
+        if (jsonMsg.json.with?.[0]?.hasOwnProperty('hover_event')) {
             const player_name = jsonMsg.json.with[0].hover_event.name;
             const player_type = jsonMsg.json.with[0].hover_event.id;
             const player_uuid = jsonMsg.json.with[0].hover_event.uuid;
             return [entity_structure(player_type, player_name, player_uuid)];
-        }else{
+        } else {
             const player_name = jsonMsg.json.with[0];
-            return [entity_structure('non_vanilla_message_player', player_name, [0,0,0,0])];
+            return [entity_structure('non_vanilla_message_player', player_name, [0, 0, 0, 0])];
         }
     }
     if (type === 'whisper') {
@@ -157,14 +157,14 @@ function params_define(type,jsonMsg) {
                 const item_type = jsonMsg.json.with[2].hover_event.id
                 const item_name = extractCustomName(jsonMsg.json.with[2].hover_event.components) ?? ('item.' + jsonMsg.json.with[2].hover_event.id.replaceAll(":", "."));
                 const item_components = jsonMsg.json.with[2].hover_event.components;
-                return [entity_structure(player_type, player_name, player_uuid), entity_structure(killer_type, killer_name, killer_uuid),entity_structure(item_type,item_name,item_components)]
+                return [entity_structure(player_type, player_name, player_uuid), entity_structure(killer_type, killer_name, killer_uuid), entity_structure(item_type, item_name, item_components)]
             }
             return [entity_structure(player_type, player_name, player_uuid), entity_structure(killer_type, killer_name, killer_uuid)]
         }
         return [entity_structure(player_type, player_name, player_uuid)];
     }
 
-    if (type === 'chat'){
+    if (type === 'chat') {
         return [jsonMsg.json.extra[1].extra];
     }
     return [];
@@ -173,7 +173,7 @@ function params_define(type,jsonMsg) {
 function extractCustomName(itemData) {
     // 1. 安全地获取 custom_name 字段
     const customName = itemData?.['minecraft:custom_name'];
-    
+
     // 如果没有自定义名称，返回 null
     if (!customName) return null;
 
@@ -186,15 +186,15 @@ function extractCustomName(itemData) {
     if (typeof customName === 'object') {
         // 获取基础文本（"毒"）
         let result = customName.text || '';
-        
+
         // 检查是否有额外的文本数组 extra
         if (Array.isArray(customName.extra)) {
-        // 遍历 extra 数组，拼接入子文本（"芽"）
-        customName.extra.forEach(part => {
-            if (part && part.text) {
-            result += part.text;
-            }
-        });
+            // 遍历 extra 数组，拼接入子文本（"芽"）
+            customName.extra.forEach(part => {
+                if (part && part.text) {
+                    result += part.text;
+                }
+            });
         }
         return result;
     }
@@ -225,7 +225,7 @@ function group_msg_handler(jsonMsg, send_group, ignore_user) {
         }
 
         return jsonMsg.msg;
-    }catch(e){
+    } catch (e) {
         throw new Error('error when handling group msg', jsonMsg, e);
     }
 }

@@ -8,22 +8,29 @@ const { handleMessage, group_msg_handler, extractWhisperInfo } = require('./src/
 const { handleWhisperCommand } = require('./src/handler/whisperCommandHandler');
 const ipc = require('./src/ipc/ipc_protocol');
 
+// ===== TPA 状态缓存（从 Python 同步） =====
+const TPA_STATE = {
+    enabled: false,
+    occupied: false,
+    occupied_by: null,
+};
+
 const QQ_FORWARD_PREFIX = (typeof config.forward_prefix === 'string' && config.forward_prefix.trim())
     ? config.forward_prefix.trim()
     : '[群聊]>>';
 
 const startArgs = process.argv.slice(2);
 try {
-    if (startArgs.length == 0){
+    if (startArgs.length == 0) {
         console.log("未指定配置文件，默认使用第一个配置");
-    }else if (startArgs.length > 0){
+    } else if (startArgs.length > 0) {
         if (startArgs.length > 5 || startArgs[0] != "-p" || isNaN(startArgs[1]) || startArgs[1] <= 0
-            || startArgs[2] != "-s" || isNaN(startArgs[3]) || startArgs[3] <= 0){
+            || startArgs[2] != "-s" || isNaN(startArgs[3]) || startArgs[3] <= 0) {
             console.error(`无效的配置参数,参数应为: -p <档案编号> -s <服务器编号>，错误参数如下：`);
             throw new Error(startArgs);
         }
     }
-}catch (e) {
+} catch (e) {
     console.error(e.message);
     process.exit(1);
 }
@@ -101,7 +108,7 @@ function setupReadlineBridge(bot) {
             const envelope = ipc.decode(line);
             if (!envelope) return;
 
-            handleIncomingIPC(bot, envelope);
+            handle_incoming_ipc(bot, envelope);
         } catch (error) {
             console.error(`处理 stdin 消息失败: ${error.message || error}`);
         }
@@ -119,7 +126,7 @@ async function main() {
         console.log(`SRV record found: ${srvHost.host}:${srvHost.port}`);
         config.server[profile].url = srvHost.host;
         config.server[profile].port = srvHost.port;
-    }else {
+    } else {
         console.log(`No SRV record found for ${config.server[profile].url}, using original host and port.`);
     }
 
@@ -181,7 +188,7 @@ async function main() {
         const uuid = packet.uuid || packet.packId || '00000000-0000-0000-0000-000000000000';
         bot._client.write('resource_pack_receive', { uuid, result: 0 });
         setTimeout(() => {
-        bot._client.write('resource_pack_receive', { uuid, result: 3 });
+            bot._client.write('resource_pack_receive', { uuid, result: 3 });
         }, 30);
     });
 
@@ -189,7 +196,7 @@ async function main() {
     bot._client.on('resource_pack_send', (packet) => {
         bot._client.write('resource_pack_receive', { result: 0 });
         setTimeout(() => {
-        bot._client.write('resource_pack_receive', { result: 3 });
+            bot._client.write('resource_pack_receive', { result: 3 });
         }, 300);
     });
 
@@ -226,7 +233,7 @@ async function main() {
         } catch (e) {
             console.error('Error processing message:', e?.jsonMsg || e);
             return;
-        }   
+        }
     });
 
     bot.on('error', (error) => {
