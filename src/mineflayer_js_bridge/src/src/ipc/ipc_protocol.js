@@ -10,11 +10,18 @@
 // Py → JS
 const ACTION_QQ_MESSAGE = 'qq_message';
 const ACTION_WHISPER_REPLY = 'whisper_reply';
+const ACTION_TPA_UPDATE_STATE = 'tpa_update_state';
+const ACTION_HOME_COMMAND = 'home_command';
 
 // JS → Py
 const ACTION_MC_MESSAGE = 'mc_message';
 const ACTION_WHISPER_COMMAND = 'whisper_command';
 const ACTION_PLAYER_LIST = 'player_list';
+const ACTION_REQUEST_TPA_STATE = 'request_tpa_state';
+const ACTION_TPA_NOTIFICATION = 'tpa_notification';
+const ACTION_TPA_OCCUPIED = 'tpa_occupied';
+const ACTION_TPA_REQUEST_DETECTED = 'tpa_request_detected';
+const ACTION_HOME_RESULT = 'home_result';
 
 /**
  * 编码一条 IPC 消息为 JSON 行（含换行符）。
@@ -60,12 +67,20 @@ function decode(line) {
 }
 
 module.exports = {
-    // Constants
+    // Py → JS
     ACTION_QQ_MESSAGE,
     ACTION_WHISPER_REPLY,
+    ACTION_TPA_UPDATE_STATE,
+    ACTION_HOME_COMMAND,
+    // JS → Py
     ACTION_MC_MESSAGE,
     ACTION_WHISPER_COMMAND,
     ACTION_PLAYER_LIST,
+    ACTION_REQUEST_TPA_STATE,
+    ACTION_TPA_NOTIFICATION,
+    ACTION_TPA_OCCUPIED,
+    ACTION_TPA_REQUEST_DETECTED,
+    ACTION_HOME_RESULT,
     // Functions
     encode,
     decode,

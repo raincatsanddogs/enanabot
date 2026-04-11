@@ -14,6 +14,12 @@
 
 用于各类消息解析
 
+## 指令系统 (Command System)
+
+JS 端内置了一套类 nonebot 风格的指令拦截与分发系统，专为需要极速响应或强依赖内部状态（例如 TPA 请求）的功能设计，可以减少不必要的 IPC 通信。
+
+* 详细说明、API Reference 和示例代码请参考：[COMMAND_SYSTEM](./COMMAND_SYSTEM.md)
+
 ## 食用方法
 
 node index.js
@@ -62,8 +68,8 @@ node index.js
 - [x] 消息处理
 - [x] 连接nonebot，并配置权限组，指令
 - v2
-- [] 私聊消息处理
-- [] 容器处理
+- [x] 私聊消息处理
+- [x] 容器处理
 - v3
 - [] 瞄准
 - [] 进食

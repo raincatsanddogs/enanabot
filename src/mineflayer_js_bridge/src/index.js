@@ -4,8 +4,8 @@ const mineflayer = require('mineflayer');
 const readline = require('node:readline');
 const config = require('./src/configs/config');
 const { resolveSrv } = require('./src/login/srv');
-const { handleMessage, group_msg_handler, extractWhisperInfo } = require('./src/handler/messageHandler');
-const { handleWhisperCommand } = require('./src/handler/whisperCommandHandler');
+const { handle_message, group_msg_handler, extract_whisper_info, extract_chat_info } = require('./src/handler/messageHandler');
+const { init_bot, on_command, dispatch_command } = require('./src/handler/commandManager');
 const ipc = require('./src/ipc/ipc_protocol');
 
 // ===== TPA 状态缓存（从 Python 同步） =====
@@ -37,7 +37,7 @@ try {
 
 const profile = (startArgs[1] - 1) || 0;
 
-function buildForwardMessage(message) {
+function build_forward_message(message) {
     const normalized = (message || '').trim();
     if (!normalized) {
         return '';
@@ -50,12 +50,109 @@ function buildForwardMessage(message) {
     return `${QQ_FORWARD_PREFIX} ${normalized}`;
 }
 
+// ===== sethome Promise 校验 =====
+
+/**
+ * 等待服务器回显 sethome 成功消息。
+ * 通过监听 bot 的 message 事件，匹配 "你创建了名叫 xxx 的家" 文本。
+ *
+ * @param {object} bot - mineflayer bot 实例
+ * @param {string} home_name - 要等待确认的 home 名称
+ * @param {number} [timeout_ms=8000] - 超时毫秒数
+ * @returns {Promise<boolean>} 成功返回 true
+ */
+function wait_for_sethome_confirm(bot, home_name, timeout_ms = 8000) {
+    return new Promise((resolve, reject) => {
+        let timer = null;
+
+        const on_message = (jsonMsg) => {
+            try {
+                // 提取可见文本
+                const text = jsonMsg.toString();
+                if (typeof text === 'string' && text.includes('你创建了名叫') && text.includes(home_name)) {
+                    cleanup();
+                    resolve(true);
+                }
+            } catch { /* 忽略解析错误 */ }
+        };
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            bot.removeListener('message', on_message);
+        };
+
+        bot.on('message', on_message);
+        timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`sethome ${home_name} 超时 (${timeout_ms}ms)`));
+        }, timeout_ms);
+    });
+}
+
+// ===== TPA 自动接受逻辑 =====
+
+/**
+ * 处理 TPA 请求的自动接受流程。
+ * 1. 同步上锁（occupied = true）
+ * 2. 执行 /sethome tpa_backup
+ * 3. 等待服务器确认
+ * 4. 执行 /tpaccept（或对应指令）
+ * 5. 通过 IPC 通知 Python 端
+ *
+ * @param {object} bot - mineflayer bot 实例
+ * @param {object} tpa_info - { requester, tpa_type, accept_command }
+ */
+async function handle_tpa_auto_accept(bot, tpa_info) {
+    const { requester, tpa_type, accept_command } = tpa_info;
+
+    // 1. 同步上锁
+    TPA_STATE.occupied = true;
+    TPA_STATE.occupied_by = requester;
+
+    // 通知 Python 端 TPA 已占用
+    const occupied_msg = ipc.encode(ipc.ACTION_TPA_OCCUPIED, {
+        occupied_by: requester,
+        tpa_type: tpa_type,
+    });
+    process.stdout.write(occupied_msg);
+
+    // 2. 执行 sethome
+    bot.chat('/sethome tpa_backup');
+
+    try {
+        // 3. 等待服务器确认 sethome 成功
+        await wait_for_sethome_confirm(bot, 'tpa_backup', 8000);
+
+        // 4. 执行 tpaccept
+        bot.chat(accept_command);
+
+        // 5. 通知 QQ 群
+        const notification = ipc.encode(ipc.ACTION_TPA_NOTIFICATION, {
+            msg: `TPA 自动接受: ${requester} (${tpa_type})`,
+        });
+        process.stdout.write(notification);
+
+        console.log(`TPA auto-accepted: ${requester} (${tpa_type})`);
+    } catch (e) {
+        // sethome 超时或失败 → 回滚锁
+        TPA_STATE.occupied = false;
+        TPA_STATE.occupied_by = null;
+
+        console.error(`TPA auto-accept 失败: ${e.message}`);
+
+        const fail_notification = ipc.encode(ipc.ACTION_TPA_NOTIFICATION, {
+            msg: `TPA 自动接受失败: ${e.message}`,
+        });
+        process.stdout.write(fail_notification);
+    }
+}
+
 /**
  * 处理来自 Py 的统一 IPC 消息。
  * @param {object} bot - mineflayer bot 实例
  * @param {object} envelope - 已解码的 IPC envelope { action, timestamp, data }
  */
-function handleIncomingIPC(bot, envelope) {
+function handle_incoming_ipc(bot, envelope) {
     const { action, data } = envelope;
 
     switch (action) {
@@ -75,7 +172,7 @@ function handleIncomingIPC(bot, envelope) {
             const msg = group_msg_handler(incoming, sendGroup, ignoreUser);
             if (typeof msg !== 'string' || msg.trim().length === 0) return;
 
-            const outgoingText = buildForwardMessage(msg);
+            const outgoingText = build_forward_message(msg);
             if (!outgoingText) return;
 
             bot.chat(outgoingText);
@@ -92,12 +189,85 @@ function handleIncomingIPC(bot, envelope) {
             break;
         }
 
+        case ipc.ACTION_TPA_UPDATE_STATE: {
+            // Python 端推送 TPA 状态更新
+            if (typeof data.enabled === 'boolean') TPA_STATE.enabled = data.enabled;
+            if (typeof data.occupied === 'boolean') TPA_STATE.occupied = data.occupied;
+            if (data.occupied_by !== undefined) TPA_STATE.occupied_by = data.occupied_by;
+            console.log(`TPA state updated: enabled=${TPA_STATE.enabled}, occupied=${TPA_STATE.occupied}`);
+            break;
+        }
+
+        case ipc.ACTION_HOME_COMMAND: {
+            // Python 端请求执行 home 命令
+            handle_home_command(bot, data);
+            break;
+        }
+
         default:
             console.warn(`未知的 IPC action: ${action}`);
     }
 }
 
-function setupReadlineBridge(bot) {
+/**
+ * 处理来自 Python 的 home 命令请求。
+ * @param {object} bot
+ * @param {object} data - { command, name, reply_to }
+ */
+async function handle_home_command(bot, data) {
+    const { command, name, reply_to } = data;
+    try {
+        const { listHomes, tpToHome } = require('./src/handler/containerUtils');
+
+        if (command === 'list') {
+            const homes = await listHomes(bot);
+            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
+                command: 'list',
+                reply_to: reply_to || '',
+                success: true,
+                result: homes,
+            });
+            process.stdout.write(result);
+        } else if (command === 'tp') {
+            await tpToHome(bot, name);
+            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
+                command: 'tp',
+                reply_to: reply_to || '',
+                success: true,
+                result: name,
+            });
+            process.stdout.write(result);
+        } else if (command === 'set') {
+            bot.chat(`/sethome ${name}`);
+            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
+                command: 'set',
+                reply_to: reply_to || '',
+                success: true,
+                result: name,
+            });
+            process.stdout.write(result);
+        } else if (command === 'remove') {
+            bot.chat(`/delhome ${name}`);
+            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
+                command: 'remove',
+                reply_to: reply_to || '',
+                success: true,
+                result: name,
+            });
+            process.stdout.write(result);
+        }
+    } catch (e) {
+        const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
+            command: command,
+            reply_to: reply_to || '',
+            success: false,
+            error: e.message || String(e),
+        });
+        process.stdout.write(result);
+    }
+}
+
+function setup_readline_bridge(bot) {
     const rl = readline.createInterface({
         input: process.stdin,
         crlfDelay: Infinity,
@@ -118,6 +288,28 @@ function setupReadlineBridge(bot) {
         console.warn('stdin 已关闭，readline 停止监听');
     });
 }
+
+// ===== 注册 JS 端内部指令 =====
+
+// tpa 指令
+const tpa_command = on_command('tpa', { permission: 'user', description: 'TPA 状态查看' });
+tpa_command.handle(async (session) => {
+    const sub = session.args[0];
+
+    if (sub === 'status' || !sub) {
+        const enabled_text = TPA_STATE.enabled ? '开启' : '关闭';
+        const occupied_text = TPA_STATE.occupied
+            ? `是（${TPA_STATE.occupied_by}）`
+            : '否';
+        await session.finish(
+            `TPA 状态: 自动接受=${enabled_text}, 占用=${occupied_text}`
+        );
+    }
+
+    // 其它子指令放行给 Python 端处理（不在此拦截）
+    // 此处不 return false，因为命令名 'tpa' 已被匹配，需要由 handler 自行处理
+    await session.finish(`未知子指令: ${sub}。可用: status`);
+});
 
 async function main() {
 
@@ -141,12 +333,15 @@ async function main() {
         sessionServer: config.skin[profile].sessionServer,
     });
 
-    setupReadlineBridge(bot);
+    // 初始化 commandManager 的 bot 引用
+    init_bot(bot);
+
+    setup_readline_bridge(bot);
 
     // ===== 在线玩家定时采集 =====
     let playerListInterval = null;
 
-    function collectPlayerList() {
+    function collect_player_list() {
         const players = bot.players;
         const playerList = [];
 
@@ -177,10 +372,14 @@ async function main() {
 
     bot.once('spawn', () => {
         // 首次上线立即采集一次
-        collectPlayerList();
+        collect_player_list();
 
         // 之后每 5 分钟采集一次
-        playerListInterval = setInterval(collectPlayerList, 5 * 60 * 1000);
+        playerListInterval = setInterval(collect_player_list, 5 * 60 * 1000);
+
+        // 向 Python 端请求 TPA 初始状态
+        const request_state = ipc.encode(ipc.ACTION_REQUEST_TPA_STATE, {});
+        process.stdout.write(request_state);
     });
 
     //唉，资源包
@@ -200,21 +399,68 @@ async function main() {
         }, 300);
     });
 
-    bot.on('message', jsonMsg => {
+    bot.on('message', async (jsonMsg) => {
         try {
-            const post_msg = handleMessage(jsonMsg, { forwardPrefix: QQ_FORWARD_PREFIX });
+            const post_msg = handle_message(jsonMsg, { forwardPrefix: QQ_FORWARD_PREFIX });
             if (!post_msg) {
                 return;
             }
 
-            // 原版 whisper → 尝试鉴权和指令处理
-            if (post_msg.type === 'whisper') {
-                const whisperInfo = extractWhisperInfo(jsonMsg);
-                if (!whisperInfo) return; // 非原版 whisper 或解析失败
+            // ===== TPA 检测（必须在指令分发之前） =====
+            if (post_msg.type === 'tpa') {
+                if (!TPA_STATE.enabled) {
+                    // TPA 自动接受未开启，记录并跳过
+                    const tpa_params = post_msg.params[0] || {};
+                    const detected = ipc.encode(ipc.ACTION_TPA_REQUEST_DETECTED, {
+                        requester: tpa_params.requester || '',
+                        type: tpa_params.tpa_type || '',
+                        auto_accepted: false,
+                    });
+                    process.stdout.write(detected);
+                    return;
+                }
 
+                if (TPA_STATE.occupied) {
+                    // 已占用，拒绝并发
+                    const tpa_params = post_msg.params[0] || {};
+                    const notification = ipc.encode(ipc.ACTION_TPA_NOTIFICATION, {
+                        msg: `TPA 请求被拒绝（当前被 ${TPA_STATE.occupied_by} 占用）: ${tpa_params.requester || '未知'}`,
+                    });
+                    process.stdout.write(notification);
+                    return;
+                }
+
+                // 启动自动接受流程
+                const tpa_params = post_msg.params[0] || {};
+                handle_tpa_auto_accept(bot, tpa_params);
+                return;
+            }
+
+            // ===== 指令分发（chat / whisper 都支持）=====
+
+            // 原版 whisper
+            if (post_msg.type === 'whisper') {
+                const whisper_info = extract_whisper_info(jsonMsg);
+                if (!whisper_info) return; // 非原版 whisper 或解析失败
+
+                // 先尝试 JS 端内部指令
+                const intercepted = await dispatch_command(
+                    whisper_info.player_name,
+                    whisper_info.whisper_text,
+                    'whisper'
+                );
+
+                if (intercepted) {
+                    // JS 内部已处理，不发送到 Python
+                    return;
+                }
+
+                // 未被 JS 端拦截 → 发送到 Python 端处理 whisper 指令
+                // 复用原有的 whisperCommandHandler 解析逻辑
+                const { handleWhisperCommand } = require('./src/handler/whisperCommandHandler');
                 const cmdResult = handleWhisperCommand(
-                    whisperInfo.player_name,
-                    whisperInfo.whisper_text,
+                    whisper_info.player_name,
+                    whisper_info.whisper_text,
                     config
                 );
 
@@ -227,7 +473,24 @@ async function main() {
                 return;
             }
 
-            // 非 whisper 消息，使用统一 IPC 格式输出到 Py 端
+            // 非原版 chat → 也可触发 JS 端指令
+            if (post_msg.type === 'chat') {
+                const chat_info = extract_chat_info(jsonMsg);
+                if (chat_info && chat_info.sender_name && chat_info.chat_text) {
+                    const intercepted = await dispatch_command(
+                        chat_info.sender_name,
+                        chat_info.chat_text,
+                        'chat'
+                    );
+
+                    if (intercepted) {
+                        // JS 内部已处理，不转发到 QQ
+                        return;
+                    }
+                }
+            }
+
+            // 非 whisper 消息（且未被内部指令拦截），使用统一 IPC 格式输出到 Py 端
             const encoded = ipc.encode(ipc.ACTION_MC_MESSAGE, post_msg);
             process.stdout.write(encoded);
         } catch (e) {
