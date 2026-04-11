@@ -292,7 +292,7 @@ function setup_readline_bridge(bot) {
 // ===== 注册 JS 端内部指令 =====
 
 // tpa 指令
-const tpa_command = on_command('tpa', { permission: 'user', description: 'TPA 状态查看' });
+const tpa_command = on_command('tpa', { permission: 'guest', description: 'TPA 状态查看' });
 tpa_command.handle(async (session) => {
     const sub = session.args[0];
 
@@ -309,6 +309,32 @@ tpa_command.handle(async (session) => {
     // 其它子指令放行给 Python 端处理（不在此拦截）
     // 此处不 return false，因为命令名 'tpa' 已被匹配，需要由 handler 自行处理
     await session.finish(`未知子指令: ${sub}。可用: status`);
+});
+
+const echo = on_command('echo', { permission: 'guest', description: 'Echo 回显测试指令' });
+echo.handle(async (session) => {
+    const response = session.args.join(' ');
+    await session.finish(`${response}`);
+});
+
+const help = on_command('help', { permission: 'guest', description: '显示帮助信息' });
+help.handle(async (session) => {
+    const sub = session.args[0];
+    if (!sub) {
+        response = '可用指令: tpa, echo, help。使用 "#help <指令名>" 查看指令详情。';
+        await session.finish(response);
+    }
+    switch (sub) {
+        case 'tpa':
+            await session.finish('tpa 指令: 查看 TPA 状态。用法: #tpa [status|on|off|back]\n子指令 status: 查看状态；\n on: 开启自动接受；\n off: 关闭自动接受；\n back: 释放占用');
+            break;
+        case 'echo':
+            await session.finish('echo 指令: 回显测试。用法: #echo <文本>');
+            break;
+        case 'help':
+            await session.finish('help 指令: 显示帮助信息。用法: #help <指令名>');
+            break;
+    }
 });
 
 async function main() {
@@ -497,6 +523,11 @@ async function main() {
             console.error('Error processing message:', e?.jsonMsg || e);
             return;
         }
+    });
+
+    bot.on('death',() => {
+        bot.chat('/dback')
+        console.warn('bot died, sent /dback command');
     });
 
     bot.on('error', (error) => {

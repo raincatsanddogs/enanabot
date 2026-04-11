@@ -9,7 +9,7 @@
  *
  *   // 注册指令
  *   const tpa_status = on_command('tpa', {
- *       permission: 'user',       // 'admin' | 'user'，默认 'admin'
+ *       permission: 'user',       // 'admin' | 'user' | 'guest'，默认 'admin'
  *       description: 'TPA 控制',
  *   });
  *
@@ -101,7 +101,7 @@ class CommandFinishSignal {
  *
  * @param {string} name - 指令名（不含前缀），匹配消息内容在去除前缀后的首个单词
  * @param {object} [options={}]
- * @param {string} [options.permission='admin'] - 最低权限要求：'admin' | 'user'
+ * @param {string} [options.permission='admin'] - 最低权限要求：'admin' | 'user' | 'guest'
  * @param {string} [options.description=''] - 指令描述
  * @returns {{ handle: (fn: (session: CommandSession) => Promise<void>) => void }}
  */
@@ -130,7 +130,7 @@ function on_command(name, options = {}) {
 
 // ===== 权限检查 =====
 
-const PERMISSION_LEVELS = { admin: 2, user: 1 };
+const PERMISSION_LEVELS = { admin: 3, user: 2, guest: 1 };
 
 /**
  * 检查实际权限是否满足指令要求。
@@ -145,14 +145,16 @@ function check_permission(actual, required) {
 /**
  * 根据玩家名获取权限等级。
  * @param {string} player_name
- * @returns {'admin' | 'user' | null}
+ * @returns {'admin' | 'user' | 'guest'}
  */
 function get_permission_level(player_name) {
     const admin_list = Array.isArray(config.admin_players) ? config.admin_players : [];
     const user_list = Array.isArray(config.user_players) ? config.user_players : [];
+    const guest_list = Array.isArray(config.guest_players) ? config.guest_players : [];
     if (admin_list.includes(player_name)) return 'admin';
     if (user_list.includes(player_name)) return 'user';
-    return null;
+    if (guest_list.includes(player_name)) return 'guest';
+    return 'guest';
 }
 
 // ===== 指令分发 =====

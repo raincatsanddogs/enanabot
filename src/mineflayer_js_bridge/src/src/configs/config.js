@@ -88,6 +88,14 @@ config.user_players = Array.isArray(config.user_players)
     ? connectConfig.user_players
     : [];
 
+config.guest_players = Array.isArray(config.guest_players)
+  ? config.guest_players
+  : Array.isArray(connectConfig.guest_players)
+    ? connectConfig.guest_players
+    : Array.isArray(connectConfig.guestPlayers)
+      ? connectConfig.guestPlayers
+      : [];
+
 config.whisper_command_prefix = (
   config.whisper_command_prefix
   ?? connectConfig.whisper_command_prefix

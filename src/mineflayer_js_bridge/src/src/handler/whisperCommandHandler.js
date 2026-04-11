@@ -6,21 +6,24 @@
 
 const PERMISSION_ADMIN = 'admin';
 const PERMISSION_USER = 'user';
+const PERMISSION_GUEST = 'guest';
 
 /**
  * 判断玩家权限等级。
  *
  * @param {string} playerName
- * @param {object} config - 须含 admin_players, user_players 数组
- * @returns {'admin' | 'user' | null}
+ * @param {object} config - 须含 admin_players, user_players, guest_players 数组
+ * @returns {'admin' | 'user' | 'guest'}
  */
 function getPermissionLevel(playerName, config) {
     const adminList = Array.isArray(config.admin_players) ? config.admin_players : [];
     const userList = Array.isArray(config.user_players) ? config.user_players : [];
+    const guestList = Array.isArray(config.guest_players) ? config.guest_players : [];
 
     if (adminList.includes(playerName)) return PERMISSION_ADMIN;
     if (userList.includes(playerName)) return PERMISSION_USER;
-    return null;
+    if (guestList.includes(playerName)) return PERMISSION_GUEST;
+    return PERMISSION_GUEST;
 }
 
 /**
@@ -28,7 +31,7 @@ function getPermissionLevel(playerName, config) {
  *
  * @param {string} playerName  - 发送者玩家名（从原版 whisper 的 hover_event 中提取）
  * @param {string} rawText     - whisper 的原始文本内容
- * @param {object} config      - 须含 admin_players, user_players, whisper_command_prefix
+ * @param {object} config      - 须含 admin_players, user_players, guest_players, whisper_command_prefix
  * @returns {{ player_name: string, permission_level: string, command: string, args: string[], raw_text: string } | null}
  */
 function handleWhisperCommand(playerName, rawText, config) {
@@ -68,6 +71,7 @@ function handleWhisperCommand(playerName, rawText, config) {
 module.exports = {
     PERMISSION_ADMIN,
     PERMISSION_USER,
+    PERMISSION_GUEST,
     getPermissionLevel,
     handleWhisperCommand,
 };
