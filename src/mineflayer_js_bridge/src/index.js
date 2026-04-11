@@ -2,21 +2,52 @@
 
 const mineflayer = require('mineflayer');
 const readline = require('node:readline');
+const fs = require('fs');
+const path = require('path');
 const config = require('./src/configs/config');
 const { resolveSrv } = require('./src/login/srv');
 const { handle_message, group_msg_handler, extract_whisper_info, extract_chat_info } = require('./src/handler/messageHandler');
 const { init_bot, on_command, dispatch_command } = require('./src/handler/commandManager');
+const homeCache = require('./src/handler/homeCache');
 const ipc = require('./src/ipc/ipc_protocol');
 
-// ===== TPA 状态缓存（从 Python 同步） =====
+// ===== TPA 状态管理（JS 端持久化） =====
+const TPA_STATE_FILE = path.join(__dirname, '../../../../configs/tpa_state.json');
 const TPA_STATE = {
     enabled: false,
     occupied: false,
     occupied_by: null,
 };
 
-let HOME_COMMAND_QUEUE = Promise.resolve();
-let HOME_OPERATION_ACTIVE_COUNT = 0;
+function load_tpa_state() {
+    try {
+        if (!fs.existsSync(TPA_STATE_FILE)) return;
+        const raw = fs.readFileSync(TPA_STATE_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.enabled === 'boolean') TPA_STATE.enabled = parsed.enabled;
+        if (typeof parsed.occupied === 'boolean') TPA_STATE.occupied = parsed.occupied;
+        if (parsed.occupied_by !== undefined) TPA_STATE.occupied_by = parsed.occupied_by;
+    } catch (e) {
+        console.error(`[tpa] load state 失败: ${e.message || e}`);
+    }
+}
+
+function save_tpa_state() {
+    try {
+        const dir = path.dirname(TPA_STATE_FILE);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(TPA_STATE_FILE, JSON.stringify({
+            enabled: TPA_STATE.enabled,
+            occupied: TPA_STATE.occupied,
+            occupied_by: TPA_STATE.occupied_by,
+            updated_at: new Date().toISOString(),
+        }, null, 2), 'utf-8');
+    } catch (e) {
+        console.error(`[tpa] save state 失败: ${e.message || e}`);
+    }
+}
 
 const QQ_FORWARD_PREFIX = (typeof config.forward_prefix === 'string' && config.forward_prefix.trim())
     ? config.forward_prefix.trim()
@@ -91,64 +122,6 @@ function parse_prefixed_command(raw_text) {
     };
 }
 
-function is_home_operation_active() {
-    return HOME_OPERATION_ACTIVE_COUNT > 0;
-}
-
-async function with_home_operation_scope(task) {
-    HOME_OPERATION_ACTIVE_COUNT += 1;
-    try {
-        return await task();
-    } finally {
-        HOME_OPERATION_ACTIVE_COUNT = Math.max(0, HOME_OPERATION_ACTIVE_COUNT - 1);
-    }
-}
-
-function is_home_related_chat_message(post_msg) {
-    if (!post_msg || typeof post_msg !== 'object') {
-        return false;
-    }
-
-    const text = normalize_command_text(post_msg.text || '');
-    if (!text) {
-        return false;
-    }
-
-    return (
-        text.includes('点击传送至') ||
-        text.includes('Shift+右键来移除家') ||
-        text.includes('按 Q 编辑') ||
-        /^#\d+:\s*x\d+/i.test(text)
-    );
-}
-
-function normalize_home_list(result) {
-    if (!Array.isArray(result)) {
-        return null;
-    }
-
-    const names = [];
-    for (const entry of result) {
-        if (typeof entry === 'string') {
-            const name = entry.trim();
-            if (name) {
-                names.push(name);
-            }
-            continue;
-        }
-
-        if (entry && typeof entry === 'object') {
-            const candidate = [entry.name, entry.label, entry.home, entry.title]
-                .find((item) => typeof item === 'string' && item.trim());
-            if (candidate) {
-                names.push(candidate.trim());
-            }
-        }
-    }
-
-    return [...new Set(names)];
-}
-
 function stringify_error(err) {
     if (err === undefined || err === null) {
         return '未知错误';
@@ -179,52 +152,93 @@ function stringify_error(err) {
     return String(err);
 }
 
-// ===== sethome Promise 校验 =====
+function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ===== Home 操作（纯指令 + 缓存） =====
 
 /**
- * 等待服务器回显 sethome 成功消息。
- * 通过监听 bot 的 message 事件，匹配 "你创建了名叫 xxx 的家" 文本。
+ * 执行 Home 操作。所有子指令均在 JS 端本地闭环。
+ * - list: 纯缓存读取；若 needsRefresh 则走一次 GUI 同步
+ * - tp: 直接发送 /home <name> 文本指令
+ * - set: 发送 /sethome <name> 并更新缓存
+ * - remove: 发送 /removehome <name> 并更新缓存
  *
  * @param {object} bot - mineflayer bot 实例
- * @param {string} home_name - 要等待确认的 home 名称
- * @param {number} [timeout_ms=8000] - 超时毫秒数
- * @returns {Promise<boolean>} 成功返回 true
+ * @param {string} command - 子指令
+ * @param {string} [name] - home 名称
+ * @returns {Promise<{ success: boolean, result?: any, error?: string }>}
  */
-function wait_for_sethome_confirm(bot, home_name, timeout_ms = 8000) {
-    return new Promise((resolve, reject) => {
-        let timer = null;
-
-        const on_message = (jsonMsg) => {
+async function execute_home_operation(bot, command, name) {
+    if (command === 'list') {
+        // 首次且无缓存时触发一次 GUI 同步
+        if (homeCache.needsRefresh()) {
             try {
-                // 提取可见文本
-                const text = jsonMsg.toString();
-                if (typeof text === 'string' && text.includes('你创建了名叫') && text.includes(home_name)) {
-                    cleanup();
-                    resolve(true);
-                }
-            } catch { /* 忽略解析错误 */ }
+                const { listHomes } = require('./src/handler/containerUtils');
+                const homes = await listHomes(bot);
+                homeCache.setFromGUI(homes);
+            } catch (e) {
+                return {
+                    success: false,
+                    error: `GUI 同步失败: ${stringify_error(e)}`,
+                };
+            }
+        }
+        return {
+            success: true,
+            result: homeCache.getList(),
         };
+    }
 
-        const cleanup = () => {
-            if (timer) clearTimeout(timer);
-            bot.removeListener('message', on_message);
+    if (command === 'tp') {
+        if (!name) {
+            return { success: false, error: '缺少 home 名称' };
+        }
+        bot.chat(`/home ${name}`);
+        return {
+            success: true,
+            result: name,
         };
+    }
 
-        bot.on('message', on_message);
-        timer = setTimeout(() => {
-            cleanup();
-            reject(new Error(`sethome ${home_name} 超时 (${timeout_ms}ms)`));
-        }, timeout_ms);
-    });
+    if (command === 'set') {
+        if (!name) {
+            return { success: false, error: '缺少 home 名称' };
+        }
+        bot.chat(`/sethome ${name}`);
+        homeCache.addHome(name);
+        return {
+            success: true,
+            result: name,
+        };
+    }
+
+    if (command === 'remove') {
+        if (!name) {
+            return { success: false, error: '缺少 home 名称' };
+        }
+        bot.chat(`/removehome ${name}`);
+        homeCache.removeHome(name);
+        return {
+            success: true,
+            result: name,
+        };
+    }
+
+    return {
+        success: false,
+        error: `未知 home 子指令: ${command}`,
+    };
 }
 
 // ===== TPA 自动接受逻辑 =====
 
 /**
- * 处理 TPA 请求的自动接受流程。
- * 1. 同步上锁（occupied = true）
- * 2. 执行 /sethome tpabackup
- * 3. 等待服务器确认
+ * 处理 TPA 请求的自动接受流程（全 JS 端闭环）。
+ * 1. 同步上锁（occupied = true）并写盘
+ * 2. 执行 /sethome tpabackup 并更新缓存
+ * 3. 等待 1000ms 弹性时间
  * 4. 执行 /tpaccept（或对应指令）
  * 5. 通过 IPC 通知 Python 端
  *
@@ -237,20 +251,15 @@ async function handle_tpa_auto_accept(bot, tpa_info) {
     // 1. 同步上锁
     TPA_STATE.occupied = true;
     TPA_STATE.occupied_by = requester;
+    save_tpa_state();
 
-    // 通知 Python 端 TPA 已占用
-    const occupied_msg = ipc.encode(ipc.ACTION_TPA_OCCUPIED, {
-        occupied_by: requester,
-        tpa_type: tpa_type,
-    });
-    process.stdout.write(occupied_msg);
-
-    // 2. 执行 sethome
+    // 2. 执行 sethome + 缓存
     bot.chat('/sethome tpabackup');
+    homeCache.addHome('tpabackup');
 
     try {
-        // 3. 等待服务器确认 sethome 成功
-        await wait_for_sethome_confirm(bot, 'tpabackup', 8000);
+        // 3. 弹性等待
+        await delay(1000);
 
         // 4. 执行 tpaccept
         bot.chat(accept_command);
@@ -263,9 +272,10 @@ async function handle_tpa_auto_accept(bot, tpa_info) {
 
         console.log(`TPA auto-accepted: ${requester} (${tpa_type})`);
     } catch (e) {
-        // sethome 超时或失败 → 回滚锁
+        // 回滚锁
         TPA_STATE.occupied = false;
         TPA_STATE.occupied_by = null;
+        save_tpa_state();
 
         console.error(`TPA auto-accept 失败: ${e.message}`);
 
@@ -274,6 +284,140 @@ async function handle_tpa_auto_accept(bot, tpa_info) {
         });
         process.stdout.write(fail_notification);
     }
+}
+
+/**
+ * 执行 TPA Back 操作（全 JS 端闭环）。
+ * 1. 传送到 tpabackup: /home tpabackup
+ * 2. 等待 forcedMove 或 1500ms 保底延迟
+ * 3. 删除备份: /removehome tpabackup + 移除缓存
+ * 4. 释放锁并写盘
+ *
+ * @param {object} bot - mineflayer bot 实例
+ * @returns {Promise<string>} 结果文本
+ */
+async function execute_tpa_back(bot) {
+    if (!TPA_STATE.occupied) {
+        return '当前没有占用，无需返回';
+    }
+
+    // 1. 传送
+    bot.chat('/home tpabackup');
+
+    // 2. 等待落地
+    await new Promise((resolve) => {
+        let timer = null;
+        const on_move = () => {
+            if (timer) clearTimeout(timer);
+            // 给一点缓冲确保完全落地
+            setTimeout(resolve, 300);
+        };
+        bot.once('forcedMove', on_move);
+        timer = setTimeout(() => {
+            bot.removeListener('forcedMove', on_move);
+            resolve();
+        }, 1500);
+    });
+
+    // 3. 删除备份
+    bot.chat('/removehome tpabackup');
+    homeCache.removeHome('tpabackup');
+
+    // 4. 释放锁
+    TPA_STATE.occupied = false;
+    TPA_STATE.occupied_by = null;
+    save_tpa_state();
+
+    return '已返回原位置';
+}
+
+
+// ===== Home 辅助函数 =====
+
+function normalize_home_list(result) {
+    if (!Array.isArray(result)) {
+        return null;
+    }
+
+    const names = [];
+    for (const entry of result) {
+        if (typeof entry === 'string') {
+            const name = entry.trim();
+            if (name) {
+                names.push(name);
+            }
+            continue;
+        }
+
+        if (entry && typeof entry === 'object') {
+            const candidate = [entry.name, entry.label, entry.home, entry.title]
+                .find((item) => typeof item === 'string' && item.trim());
+            if (candidate) {
+                names.push(candidate.trim());
+            }
+        }
+    }
+
+    return [...new Set(names)];
+}
+
+function format_home_result_message(command, success, result, error, name) {
+    const errMsg = stringify_error(error);
+
+    if (command === 'list') {
+        if (!success) {
+            return `获取 home 列表失败: ${errMsg}`;
+        }
+        const homes = normalize_home_list(result);
+        if (homes && homes.length > 0) {
+            return `Home 列表: ${homes.join(', ')}`;
+        }
+        if (typeof result === 'string' && result.trim()) {
+            return `Home 列表: ${result.trim()}`;
+        }
+        return '没有设置任何 home';
+    }
+
+    if (command === 'tp') {
+        if (success) {
+            return `已传送到 home: ${name || result || ''}`.trim();
+        }
+        return `传送失败: ${errMsg}`;
+    }
+
+    if (command === 'set') {
+        if (success) {
+            return `已设置 home: ${name || result || ''}`.trim();
+        }
+        return `设置失败: ${errMsg}`;
+    }
+
+    if (command === 'remove') {
+        if (success) {
+            return `已删除 home: ${name || result || ''}`.trim();
+        }
+        return `删除失败: ${errMsg}`;
+    }
+
+    return success ? String(result || '') : `操作失败: ${errMsg}`;
+}
+
+function is_home_related_chat_message(post_msg) {
+    if (!post_msg || typeof post_msg !== 'object') {
+        return false;
+    }
+
+    const text = normalize_command_text(post_msg.text || '');
+    if (!text) {
+        return false;
+    }
+
+    return (
+        text.includes('点击传送至') ||
+        text.includes('Shift+右键来移除家') ||
+        text.includes('按 Q 编辑') ||
+        /^#\d+:\s*x\d+/i.test(text)
+    );
 }
 
 /**
@@ -318,18 +462,9 @@ function handle_incoming_ipc(bot, envelope) {
             break;
         }
 
-        case ipc.ACTION_TPA_UPDATE_STATE: {
-            // Python 端推送 TPA 状态更新
-            if (typeof data.enabled === 'boolean') TPA_STATE.enabled = data.enabled;
-            if (typeof data.occupied === 'boolean') TPA_STATE.occupied = data.occupied;
-            if (data.occupied_by !== undefined) TPA_STATE.occupied_by = data.occupied_by;
-            console.log(`TPA state updated: enabled=${TPA_STATE.enabled}, occupied=${TPA_STATE.occupied}`);
-            break;
-        }
-
-        case ipc.ACTION_HOME_COMMAND: {
-            // Python 端请求执行 home 命令
-            enqueue_home_command(bot, data);
+        case ipc.ACTION_DELEGATE_COMMAND: {
+            // Python 委托 JS 执行指令
+            handle_delegated_command(bot, data);
             break;
         }
 
@@ -338,175 +473,138 @@ function handle_incoming_ipc(bot, envelope) {
     }
 }
 
-function enqueue_home_command(bot, data) {
-    HOME_COMMAND_QUEUE = HOME_COMMAND_QUEUE
-        .then(() => handle_home_command(bot, data))
-        .catch((error) => {
-            console.error(`home 命令队列执行失败: ${error.message || error}`);
-        });
+/**
+ * 处理 Python 委托的指令执行。
+ * @param {object} bot
+ * @param {object} data - { command, args, reply_to, permission }
+ */
+async function handle_delegated_command(bot, data) {
+    const { command, args, reply_to, permission } = data;
+    const arg_list = Array.isArray(args) ? args : [];
 
-    return HOME_COMMAND_QUEUE;
-}
+    let result_text = '';
 
-function format_home_whisper_message(command, success, result, error, name) {
-    const errMsg = stringify_error(error);
-
-    if (command === 'list') {
-        if (!success) {
-            return `获取 home 列表失败: ${errMsg}`;
+    try {
+        if (command === 'tpa') {
+            result_text = await execute_delegated_tpa(bot, arg_list, permission || 'user');
+        } else if (command === 'home') {
+            result_text = await execute_delegated_home(bot, arg_list, permission || 'user');
+        } else {
+            result_text = `未知委托指令: ${command}`;
         }
-        const homes = normalize_home_list(result);
-        if (homes && homes.length > 0) {
-            return `Home 列表: ${homes.join(', ')}`;
-        }
-        if (typeof result === 'string' && result.trim()) {
-            return `Home 列表: ${result.trim()}`;
-        }
-        return '没有设置任何 home';
+    } catch (e) {
+        result_text = `指令执行失败: ${stringify_error(e)}`;
     }
 
-    if (command === 'tp') {
-        if (success) {
-            return `已传送到 home: ${name || result || ''}`.trim();
-        }
-        return `传送失败: ${errMsg}`;
-    }
-
-    if (command === 'set') {
-        if (success) {
-            return `已设置 home: ${name || result || ''}`.trim();
-        }
-        return `设置失败: ${errMsg}`;
-    }
-
-    if (command === 'remove') {
-        if (success) {
-            return `已删除 home: ${name || result || ''}`.trim();
-        }
-        return `删除失败: ${errMsg}`;
-    }
-
-    return success ? String(result || '') : `操作失败: ${errMsg}`;
-}
-
-function emit_home_result(bot, payload, options = {}) {
-    const whisperTarget = typeof options.whisperTarget === 'string' ? options.whisperTarget.trim() : '';
-    const name = typeof options.name === 'string' ? options.name : '';
-    const shouldDirectReply = whisperTarget.length > 0;
-
-    const envelopePayload = shouldDirectReply
-        ? { ...payload, direct_replied: true }
-        : payload;
-
-    process.stdout.write(ipc.encode(ipc.ACTION_HOME_RESULT, envelopePayload));
-
-    if (!shouldDirectReply) {
-        return;
-    }
-
-    const message = format_home_whisper_message(
-        payload.command,
-        Boolean(payload.success),
-        payload.result,
-        payload.error,
-        name
-    );
-
-    if (message) {
-        bot.whisper(whisperTarget, message);
-    }
-}
-
-const HOME_ALL_SUB_COMMANDS = new Set(['list', 'tp', 'set', 'remove']);
-const HOME_NON_ADMIN_ALLOWED_SUB_COMMANDS = new Set(['list']);
-
-function build_home_full_command(sub, name) {
-    if (!sub) {
-        return 'home';
-    }
-    if (name) {
-        return `home ${sub} ${name}`;
-    }
-    return `home ${sub}`;
-}
-
-function can_execute_home_sub_command(permission, sub) {
-    if (permission === 'admin') {
-        return true;
-    }
-    return HOME_NON_ADMIN_ALLOWED_SUB_COMMANDS.has(sub);
-}
-
-async function execute_home_operation(bot, command, name) {
-    const { listHomes, tpToHome } = require('./src/handler/containerUtils');
-
-    if (command === 'list') {
-        return with_home_operation_scope(async () => {
-            const homes = await listHomes(bot);
-            return {
-                success: true,
-                result: homes,
-            };
-        });
-    }
-
-    if (command === 'tp') {
-        return with_home_operation_scope(async () => {
-            await tpToHome(bot, name);
-            return {
-                success: true,
-                result: name,
-            };
-        });
-    }
-
-    if (command === 'set') {
-        bot.chat(`/sethome ${name}`);
-        return {
-            success: true,
-            result: name,
-        };
-    }
-
-    if (command === 'remove') {
-        bot.chat(`/delhome ${name}`);
-        return {
-            success: true,
-            result: name,
-        };
-    }
-
-    return {
-        success: false,
-        error: `未知 home 子指令: ${command}`,
-    };
+    // 回传结果给 Python
+    const result_msg = ipc.encode(ipc.ACTION_DELEGATE_RESULT, {
+        reply_to: reply_to || '',
+        command: command,
+        args: arg_list,
+        result: result_text,
+    });
+    process.stdout.write(result_msg);
 }
 
 /**
- * 处理来自 Python 的 home 命令请求。
- * @param {object} bot
- * @param {object} data - { command, name, reply_to }
+ * 执行被委托的 tpa 指令。
  */
-async function handle_home_command(bot, data) {
-    const { command, name, reply_to, whisper_target } = data;
+async function execute_delegated_tpa(bot, args, permission) {
+    const sub = (args[0] || '').toLowerCase();
+
+    if (!sub) {
+        return '用法: tpa <on|off|status|back>';
+    }
+
+    if (sub === 'on') {
+        if (permission !== 'admin') return '权限不足：需要管理员权限';
+        TPA_STATE.enabled = true;
+        save_tpa_state();
+        return 'TPA 自动接受已开启';
+    }
+
+    if (sub === 'off') {
+        if (permission !== 'admin') return '权限不足：需要管理员权限';
+        if (TPA_STATE.occupied) {
+            try {
+                await execute_tpa_back(bot);
+            } catch (e) {
+                return `关闭失败: ${stringify_error(e)}`;
+            }
+        }
+        TPA_STATE.enabled = false;
+        TPA_STATE.occupied = false;
+        TPA_STATE.occupied_by = null;
+        save_tpa_state();
+        return 'TPA 自动接受已关闭';
+    }
+
+    if (sub === 'status') {
+        const enabled_text = TPA_STATE.enabled ? '开启' : '关闭';
+        const occupied_text = TPA_STATE.occupied
+            ? `是（${TPA_STATE.occupied_by}）`
+            : '否';
+        return `TPA 状态：\n- 自动接受: ${enabled_text}\n- 当前占用: ${occupied_text}`;
+    }
+
+    if (sub === 'back') {
+        if (!TPA_STATE.occupied) {
+            return '当前没有占用，无需返回';
+        }
+        // 检查权限：占用者本人 (whisper 场景) 或 admin
+        if (permission !== 'admin') {
+            return '权限不足：需要管理员权限或占用者本人';
+        }
+        try {
+            return await execute_tpa_back(bot);
+        } catch (e) {
+            return `返回失败: ${stringify_error(e)}`;
+        }
+    }
+
+    return '用法: tpa <on|off|status|back>';
+}
+
+/**
+ * 执行被委托的 home 指令。
+ */
+async function execute_delegated_home(bot, args, permission) {
+    const sub = (args[0] || '').toLowerCase();
+    const name = args[1] || null;
+
+    if (!sub) {
+        return '用法: home <list|tp|set|remove> [名称]';
+    }
+
+    const ALL_SUB = new Set(['list', 'tp', 'set', 'remove']);
+    const USER_ALLOWED = new Set(['list']);
+
+    if (!ALL_SUB.has(sub)) {
+        return '用法: home <list|tp|set|remove> [名称]';
+    }
+
+    if (permission !== 'admin' && !USER_ALLOWED.has(sub)) {
+        return `权限不足：home ${sub}`;
+    }
+
+    if (sub === 'tp' && !name) {
+        // 没指定名称时返回列表
+        const operation = await execute_home_operation(bot, 'list');
+        return format_home_result_message('list', operation.success, operation.result, operation.error, '');
+    }
+
+    if ((sub === 'set' || sub === 'remove') && !name) {
+        return `用法: home ${sub} <名称>`;
+    }
+
     try {
-        const operation = await execute_home_operation(bot, command, name);
-        emit_home_result(bot, {
-            command: command,
-            reply_to: reply_to || '',
-            success: operation.success,
-            result: operation.result,
-            error: operation.error,
-        }, { whisperTarget: whisper_target, name });
+        const operation = await execute_home_operation(bot, sub, name);
+        return format_home_result_message(sub, operation.success, operation.result, operation.error, name);
     } catch (e) {
-        emit_home_result(bot, {
-            command: command,
-            reply_to: reply_to || '',
-            success: false,
-            error: e.message || String(e),
-        }, { whisperTarget: whisper_target, name });
+        return format_home_result_message(sub, false, '', stringify_error(e), name);
     }
 }
+
 
 function setup_readline_bridge(bot) {
     const rl = readline.createInterface({
@@ -530,12 +628,12 @@ function setup_readline_bridge(bot) {
     });
 }
 
-// ===== 注册 JS 端内部指令 =====
+// ===== 注册 JS 端内部指令（whisper / chat 场景） =====
 
-// tpa 指令
-const tpa_command = on_command('tpa', { permission: 'guest', description: 'TPA 状态查看' });
+// tpa 指令 — 全功能本地闭环
+const tpa_command = on_command('tpa', { permission: 'guest', description: 'TPA 控制' });
 tpa_command.handle(async (session) => {
-    const sub = session.args[0];
+    const sub = (session.args[0] || '').toLowerCase();
 
     if (sub === 'status' || !sub) {
         const enabled_text = TPA_STATE.enabled ? '开启' : '关闭';
@@ -547,23 +645,58 @@ tpa_command.handle(async (session) => {
         );
     }
 
-    // 非 status 子指令在 whisper 场景转发给 Python 端统一调度。
-    if (session.source_type === 'whisper') {
-        const payload = {
-            player_name: session.sender_name,
-            permission_level: session.permission,
-            command: session.command_name,
-            args: session.args,
-            raw_text: session.raw_text,
-        };
-        process.stdout.write(ipc.encode(ipc.ACTION_WHISPER_COMMAND, payload));
-        return;
+    if (sub === 'on') {
+        if (session.permission !== 'admin') {
+            await session.finish('权限不足：需要管理员权限');
+        }
+        TPA_STATE.enabled = true;
+        save_tpa_state();
+        await session.finish('TPA 自动接受已开启');
     }
 
-    // chat 场景保留本地提示，避免误触发。
-    await session.finish(`未知子指令: ${sub}。可用: status`);
+    if (sub === 'off') {
+        if (session.permission !== 'admin') {
+            await session.finish('权限不足：需要管理员权限');
+        }
+        if (TPA_STATE.occupied) {
+            try {
+                await execute_tpa_back(session.bot);
+            } catch (e) {
+                await session.finish(`关闭失败: ${stringify_error(e)}`);
+            }
+        }
+        TPA_STATE.enabled = false;
+        TPA_STATE.occupied = false;
+        TPA_STATE.occupied_by = null;
+        save_tpa_state();
+        await session.finish('TPA 自动接受已关闭');
+    }
+
+    if (sub === 'back') {
+        if (!TPA_STATE.occupied) {
+            await session.finish('当前没有占用，无需返回');
+        }
+        // 占用者本人或 admin
+        const is_occupier = (
+            session.sender_name &&
+            TPA_STATE.occupied_by &&
+            session.sender_name.toLowerCase() === TPA_STATE.occupied_by.toLowerCase()
+        );
+        if (session.permission !== 'admin' && !is_occupier) {
+            await session.finish('权限不足：需要管理员权限或占用者本人');
+        }
+        try {
+            const result = await execute_tpa_back(session.bot);
+            await session.finish(result);
+        } catch (e) {
+            await session.finish(`返回失败: ${stringify_error(e)}`);
+        }
+    }
+
+    await session.finish(`未知子指令: ${sub}。可用: status, on, off, back`);
 });
 
+// home 指令 — 全功能本地闭环
 const home_command = on_command('home', { permission: 'guest', description: 'Home 管理指令' });
 home_command.handle(async (session) => {
     const usage = '用法: #home <list|tp|set|remove> [名称]';
@@ -575,20 +708,21 @@ home_command.handle(async (session) => {
 
     const sub = String(sub_raw).toLowerCase();
     const name = session.args[1];
-    const full_command = build_home_full_command(sub, name);
+    const ALL_SUB = new Set(['list', 'tp', 'set', 'remove']);
+    const USER_ALLOWED = new Set(['list']);
 
-    if (!HOME_ALL_SUB_COMMANDS.has(sub)) {
-        await session.finish(session.permission === 'admin' ? usage : `权限不足：${full_command}`);
+    if (!ALL_SUB.has(sub)) {
+        await session.finish(session.permission === 'admin' ? usage : `权限不足：home ${sub}`);
     }
 
-    // 对齐 Python 侧规则：非 admin 仅允许 home list
-    if (!can_execute_home_sub_command(session.permission, sub)) {
-        await session.finish(`权限不足：${full_command}`);
+    // 非 admin 仅允许 home list
+    if (session.permission !== 'admin' && !USER_ALLOWED.has(sub)) {
+        await session.finish(`权限不足：home ${sub}`);
     }
 
     if (sub === 'tp' && !name) {
         const operation = await execute_home_operation(session.bot, 'list');
-        const message = format_home_whisper_message('list', operation.success, operation.result, operation.error, '');
+        const message = format_home_result_message('list', operation.success, operation.result, operation.error, '');
         await session.finish(message);
     }
 
@@ -598,10 +732,10 @@ home_command.handle(async (session) => {
 
     try {
         const operation = await execute_home_operation(session.bot, sub, name);
-        const message = format_home_whisper_message(sub, operation.success, operation.result, operation.error, name);
+        const message = format_home_result_message(sub, operation.success, operation.result, operation.error, name);
         await session.finish(message);
     } catch (e) {
-        const message = format_home_whisper_message(sub, false, '', e.message || String(e), name);
+        const message = format_home_result_message(sub, false, '', e.message || String(e), name);
         await session.finish(message);
     }
 });
@@ -636,6 +770,12 @@ help.handle(async (session) => {
 });
 
 async function main() {
+
+    // 启动时加载状态
+    load_tpa_state();
+    homeCache.load();
+    console.log(`[init] TPA state: enabled=${TPA_STATE.enabled}, occupied=${TPA_STATE.occupied}`);
+    console.log(`[init] Home cache: ${homeCache.getList().length} homes, needsRefresh=${homeCache.needsRefresh()}`);
 
     const srvHost = await resolveSrv(config.server[profile].url);
     if (srvHost) {
@@ -700,10 +840,6 @@ async function main() {
 
         // 之后每 5 分钟采集一次
         playerListInterval = setInterval(collect_player_list, 5 * 60 * 1000);
-
-        // 向 Python 端请求 TPA 初始状态
-        const request_state = ipc.encode(ipc.ACTION_REQUEST_TPA_STATE, {});
-        process.stdout.write(request_state);
     });
 
     //唉，资源包
@@ -784,14 +920,13 @@ async function main() {
                     return;
                 }
 
-                // home 指令必须在 JS 本地闭环，不再回退到 Python。
-                if (parsed_whisper_command && parsed_whisper_command.command === 'home') {
-                    console.warn('[home] dispatch 未拦截，已阻止 home 指令回退到 Python');
+                // home 和 tpa 指令必须在 JS 本地闭环，不再回退到 Python。
+                if (parsed_whisper_command && (parsed_whisper_command.command === 'home' || parsed_whisper_command.command === 'tpa')) {
+                    console.warn(`[${parsed_whisper_command.command}] dispatch 未拦截，已阻止回退到 Python`);
                     return;
                 }
 
                 // 未被 JS 端拦截 → 发送到 Python 端处理 whisper 指令
-                // 复用原有的 whisperCommandHandler 解析逻辑
                 const { handleWhisperCommand } = require('./src/handler/whisperCommandHandler');
                 const cmdResult = handleWhisperCommand(
                     whisper_info.player_name,
@@ -830,8 +965,8 @@ async function main() {
                 }
             }
 
-            // Home 本地操作期间，抑制 home 列表相关的系统聊天行，避免噪声推送给 Python。
-            if (is_home_operation_active() && is_home_related_chat_message(post_msg)) {
+            // Home 本地操作期间（GUI 同步），抑制 home 列表相关的系统聊天行
+            if (homeCache.needsRefresh() && is_home_related_chat_message(post_msg)) {
                 return;
             }
 
