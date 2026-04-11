@@ -306,8 +306,20 @@ tpa_command.handle(async (session) => {
         );
     }
 
-    // 其它子指令放行给 Python 端处理（不在此拦截）
-    // 此处不 return false，因为命令名 'tpa' 已被匹配，需要由 handler 自行处理
+    // 非 status 子指令在 whisper 场景转发给 Python 端统一调度。
+    if (session.source_type === 'whisper') {
+        const payload = {
+            player_name: session.sender_name,
+            permission_level: session.permission,
+            command: session.command_name,
+            args: session.args,
+            raw_text: session.raw_text,
+        };
+        process.stdout.write(ipc.encode(ipc.ACTION_WHISPER_COMMAND, payload));
+        return;
+    }
+
+    // chat 场景保留本地提示，避免误触发。
     await session.finish(`未知子指令: ${sub}。可用: status`);
 });
 
