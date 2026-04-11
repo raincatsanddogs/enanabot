@@ -1,8 +1,7 @@
 /**
  * Whisper 指令鉴权与解析
  *
- * 仅处理原版 whisper 消息（translate === 'commands.message.display.incoming'）。
- * 非原版 whisper 不可信，直接丢弃。
+ * 来源无关：消息可信性由上游 messageHandler 的 extract_whisper_info 保证。
  */
 
 const PERMISSION_ADMIN = 'admin';

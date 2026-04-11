@@ -153,10 +153,15 @@ function type_define(jsonMsg) {
         return 'tpa';
     }
 
-    // chat：非原版消息中 click_event 固定在 extras[0]
-    // 注意：非原版 whisper 不可信，统一归为 chat 或其他类型，不再识别为 whisper
+    // 非原版私聊：常见形态为 click_event.command='/msg <player>' 且内容包含方向箭头
     const cmd = first && first.click_event && first.click_event.command;
     if (typeof cmd === 'string' && cmd.startsWith('/msg ')) {
+        const header_text = Array.isArray(first.extra)
+            ? first.extra.map(item => extract_text_component(item)).join('')
+            : '';
+        if (header_text.includes('->')) {
+            return 'whisper';
+        }
         return 'chat';
     }
 
@@ -231,14 +236,18 @@ function params_define(type, jsonMsg) {
         }
     }
     if (type === 'whisper') {
-        // 仅处理原版 whisper（translate === 'commands.message.display.incoming'）
+        // 原版 whisper
         if (jsonMsg.translate === 'commands.message.display.incoming') {
             const sender_name = jsonMsg.json.with[0].hover_event.name;
             const sender_type = jsonMsg.json.with[0].hover_event.id;
             const sender_uuid = jsonMsg.json.with[0].hover_event.uuid;
             return [entity_structure(sender_type, sender_name, sender_uuid)];
         }
-        // 非原版 whisper 不可信，返回空（不应到达此处，type_define 已不再识别非原版 whisper）
+        // 非原版 whisper：尽力提取玩家名
+        const non_vanilla = parse_non_vanilla_whisper(jsonMsg);
+        if (non_vanilla) {
+            return [entity_structure('non_vanilla_message_player', non_vanilla.player_name, [0, 0, 0, 0])];
+        }
         return [];
     }
 
@@ -346,15 +355,59 @@ function group_msg_handler(jsonMsg, send_group, ignore_user) {
 }
 
 /**
- * 从原版 whisper 消息中提取发送者玩家名和私聊文本。
- * 仅处理 translate === 'commands.message.display.incoming' 的消息。
+ * 解析非原版私聊结构（/msg 样式）。
+ * 返回值会标记是否为“别人发给我”的入站私聊。
+ *
+ * @param {object} jsonMsg - mineflayer 的 jsonMsg 对象
+ * @returns {{ player_name: string, whisper_text: string, is_incoming_to_me: boolean } | null}
+ */
+function parse_non_vanilla_whisper(jsonMsg) {
+    const extras = (jsonMsg.json && jsonMsg.json.extra) || [];
+    const first = extras[0];
+
+    if (!first || typeof first !== 'object') return null;
+
+    const cmd = first.click_event && first.click_event.command;
+    if (!(typeof cmd === 'string' && cmd.startsWith('/msg '))) return null;
+
+    const player_name = cmd.slice(5).trim();
+    if (!player_name) return null;
+
+    const header_nodes = Array.isArray(first.extra) ? first.extra : [];
+    const composed = header_nodes.map(item => extract_text_component(item)).join('').trim();
+    if (!composed) return null;
+
+    const close_idx = composed.indexOf(']');
+    const whisper_text = close_idx >= 0
+        ? composed.slice(close_idx + 1).trim()
+        : composed;
+
+    const is_incoming_to_me = /->\s*(我|me)\s*]/i.test(composed);
+
+    return {
+        player_name,
+        whisper_text,
+        is_incoming_to_me,
+    };
+}
+
+/**
+ * 从 whisper 消息中提取发送者玩家名和私聊文本。
+ * 支持原版 incoming whisper 与非原版 /msg 结构的入站私聊。
  *
  * @param {object} jsonMsg - mineflayer 的 jsonMsg 对象
  * @returns {{ player_name: string, whisper_text: string } | null}
  */
 function extract_whisper_info(jsonMsg) {
     const translate = jsonMsg.translate || (jsonMsg.json && jsonMsg.json.translate);
-    if (translate !== 'commands.message.display.incoming') return null;
+    if (translate !== 'commands.message.display.incoming') {
+        const non_vanilla = parse_non_vanilla_whisper(jsonMsg);
+        if (!non_vanilla || !non_vanilla.is_incoming_to_me) return null;
+        return {
+            player_name: non_vanilla.player_name,
+            whisper_text: non_vanilla.whisper_text,
+        };
+    }
 
     try {
         const withArr = jsonMsg.json && jsonMsg.json.with;

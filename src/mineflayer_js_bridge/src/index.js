@@ -438,10 +438,10 @@ async function main() {
 
             // ===== 指令分发（chat / whisper 都支持）=====
 
-            // 原版 whisper
+            // whisper（原版 incoming + 非原版入站私聊）
             if (post_msg.type === 'whisper') {
                 const whisper_info = extract_whisper_info(jsonMsg);
-                if (!whisper_info) return; // 非原版 whisper 或解析失败
+                if (!whisper_info) return; // 非入站私聊或解析失败
 
                 // 先尝试 JS 端内部指令
                 const intercepted = await dispatch_command(
