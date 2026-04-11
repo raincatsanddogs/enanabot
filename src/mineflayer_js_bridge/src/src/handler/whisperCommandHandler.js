@@ -8,6 +8,18 @@ const PERMISSION_ADMIN = 'admin';
 const PERMISSION_USER = 'user';
 const PERMISSION_GUEST = 'guest';
 
+function normalizePlayerName(name) {
+    if (typeof name !== 'string') return '';
+    return name.trim().toLowerCase();
+}
+
+function normalizePlayerList(listLike) {
+    if (!Array.isArray(listLike)) return [];
+    return listLike
+        .map((item) => normalizePlayerName(String(item)))
+        .filter((item) => item.length > 0);
+}
+
 /**
  * 判断玩家权限等级。
  *
@@ -16,13 +28,14 @@ const PERMISSION_GUEST = 'guest';
  * @returns {'admin' | 'user' | 'guest'}
  */
 function getPermissionLevel(playerName, config) {
-    const adminList = Array.isArray(config.admin_players) ? config.admin_players : [];
-    const userList = Array.isArray(config.user_players) ? config.user_players : [];
-    const guestList = Array.isArray(config.guest_players) ? config.guest_players : [];
+    const normalizedName = normalizePlayerName(playerName);
+    const adminList = normalizePlayerList(config.admin_players);
+    const userList = normalizePlayerList(config.user_players);
+    const guestList = normalizePlayerList(config.guest_players);
 
-    if (adminList.includes(playerName)) return PERMISSION_ADMIN;
-    if (userList.includes(playerName)) return PERMISSION_USER;
-    if (guestList.includes(playerName)) return PERMISSION_GUEST;
+    if (adminList.includes(normalizedName)) return PERMISSION_ADMIN;
+    if (userList.includes(normalizedName)) return PERMISSION_USER;
+    if (guestList.includes(normalizedName)) return PERMISSION_GUEST;
     return PERMISSION_GUEST;
 }
 
@@ -56,7 +69,7 @@ function handleWhisperCommand(playerName, rawText, config) {
     if (!commandBody) return null;
 
     const parts = commandBody.split(/\s+/);
-    const command = parts[0];
+    const command = parts[0].toLowerCase();
     const args = parts.slice(1);
 
     return {

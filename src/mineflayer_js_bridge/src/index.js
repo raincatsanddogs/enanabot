@@ -15,6 +15,8 @@ const TPA_STATE = {
     occupied_by: null,
 };
 
+let HOME_COMMAND_QUEUE = Promise.resolve();
+
 const QQ_FORWARD_PREFIX = (typeof config.forward_prefix === 'string' && config.forward_prefix.trim())
     ? config.forward_prefix.trim()
     : '[群聊]>>';
@@ -200,13 +202,23 @@ function handle_incoming_ipc(bot, envelope) {
 
         case ipc.ACTION_HOME_COMMAND: {
             // Python 端请求执行 home 命令
-            handle_home_command(bot, data);
+            enqueue_home_command(bot, data);
             break;
         }
 
         default:
             console.warn(`未知的 IPC action: ${action}`);
     }
+}
+
+function enqueue_home_command(bot, data) {
+    HOME_COMMAND_QUEUE = HOME_COMMAND_QUEUE
+        .then(() => handle_home_command(bot, data))
+        .catch((error) => {
+            console.error(`home 命令队列执行失败: ${error.message || error}`);
+        });
+
+    return HOME_COMMAND_QUEUE;
 }
 
 /**
@@ -253,6 +265,14 @@ async function handle_home_command(bot, data) {
                 reply_to: reply_to || '',
                 success: true,
                 result: name,
+            });
+            process.stdout.write(result);
+        } else {
+            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
+                command: command,
+                reply_to: reply_to || '',
+                success: false,
+                error: `未知 home 子指令: ${command}`,
             });
             process.stdout.write(result);
         }

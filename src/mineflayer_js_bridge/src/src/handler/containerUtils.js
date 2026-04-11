@@ -16,6 +16,10 @@ function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const HOME_WINDOW_OPEN_TIMEOUT_MS = 4000;
+const HOME_PAGE_SWITCH_DELAY_MS = 400;
+const HOME_TP_CLICK_DELAY_MS = 350;
+
 /**
  * 递归提取 Minecraft JSON 文本组件的纯文本。
  * 支持两种格式：
@@ -319,14 +323,14 @@ function waitForWindowOpen(bot, timeoutMs) {
  */
 async function listHomes(bot) {
     bot.chat('/home');
-    const window = await waitForWindowOpen(bot, 5000);
+    const window = await waitForWindowOpen(bot, HOME_WINDOW_OPEN_TIMEOUT_MS);
     const homes = new Set(extractHomes(window));
 
     // 处理翻页
     const nextSlot = findNextSlot(window);
     if (nextSlot !== null) {
         bot.clickWindow(nextSlot, 0, 0);
-        await delay(800);
+        await delay(HOME_PAGE_SWITCH_DELAY_MS);
         const updatedWindow = bot.currentWindow || window;
         for (const home of extractHomes(updatedWindow)) {
             homes.add(home);
@@ -350,7 +354,7 @@ async function listHomes(bot) {
  */
 async function tpToHome(bot, homeName) {
     bot.chat('/home');
-    const window = await waitForWindowOpen(bot, 5000);
+    const window = await waitForWindowOpen(bot, HOME_WINDOW_OPEN_TIMEOUT_MS);
 
     // 在当前页查找
     let homeSlot = findHomeSlot(window, homeName);
@@ -360,7 +364,7 @@ async function tpToHome(bot, homeName) {
         const nextSlot = findNextSlot(window);
         if (nextSlot !== null) {
             bot.clickWindow(nextSlot, 0, 0);
-            await delay(800);
+            await delay(HOME_PAGE_SWITCH_DELAY_MS);
             const updatedWindow = bot.currentWindow || window;
             homeSlot = findHomeSlot(updatedWindow, homeName);
         }
@@ -375,7 +379,7 @@ async function tpToHome(bot, homeName) {
 
     // 点击传送
     bot.clickWindow(homeSlot, 0, 0);
-    await delay(500);
+    await delay(HOME_TP_CLICK_DELAY_MS);
 
     return true;
 }

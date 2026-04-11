@@ -19,6 +19,8 @@ connect:
   #  admin_players: ["player1"] 可通过 MC 私聊执行所有指令的玩家名列表（管理员）
   #  user_players: ["player2"] 可通过 MC 私聊执行部分安全指令的玩家名列表（普通用户）
   #  guest_players: ["player3"] 可选显式访客列表；未命中 admin/user 的玩家默认同样视为 guest
+  #  以上列表请填写 MC 玩家名（不是 QQ 号），支持大小写无关匹配
+  #  示例：admin_players: ["doveoverthere"]
   #  whisper_command_prefix: "#" MC 私聊指令前缀，如 #mc status
   timeout: 10
   retry: 3

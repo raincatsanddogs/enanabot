@@ -5,6 +5,7 @@ import re
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import nonebot
 from nonebot import get_bots, get_driver, get_plugin_config, logger, on_command, on_message
@@ -444,7 +445,7 @@ async def _dispatch_home_command(args: list[str]) -> str:
     
     if sub == "list":
         try:
-            result = await _send_home_command("list", timeout=10.0)
+            result = await _send_home_command("list", timeout=7.0)
             if result.get("success"):
                 homes = result.get("result", [])
                 if isinstance(homes, list):
@@ -515,10 +516,19 @@ async def _send_home_command(
     
     if js_process is None or js_process.returncode is not None:
         raise RuntimeError("JS 进程未运行")
+
+    normalized_reply_to = ""
+    if isinstance(reply_to, str):
+        normalized_reply_to = reply_to.strip()
+    elif reply_to is not None:
+        normalized_reply_to = str(reply_to).strip()
+
+    if not normalized_reply_to:
+        normalized_reply_to = f"home-{command}-{uuid4().hex[:12]}"
     
     # 创建 Future 用于等待结果
-    wait_key = f"{reply_to}:{command}" if reply_to else command
-    future: asyncio.Future = asyncio.get_event_loop().create_future()
+    wait_key = f"{normalized_reply_to}:{command}"
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
     HOME_RESULT_PENDING[wait_key] = future
     
     try:
@@ -526,7 +536,7 @@ async def _send_home_command(
         encoded = _ipc_encode(IPC_ACTION_HOME_COMMAND, {
             "command": command,
             "name": name,
-            "reply_to": reply_to,
+            "reply_to": normalized_reply_to,
         })
         
         js_process.stdin.write(encoded.encode("utf-8"))
@@ -1200,6 +1210,18 @@ async def _handle_home_result(data: dict[str, object]) -> None:
     """处理来自 JS 的 home_result：将结果传递给等待的 Future。"""
     reply_to = data.get("reply_to", "")
     command = data.get("command", "")
+
+    if not isinstance(reply_to, str):
+        reply_to = "" if reply_to is None else str(reply_to)
+    if not isinstance(command, str):
+        command = "" if command is None else str(command)
+
+    reply_to = reply_to.strip()
+    command = command.strip()
+
+    if not command:
+        logger.warning("收到无 command 的 home_result，忽略")
+        return
     
     # 构造等待键
     wait_key = f"{reply_to}:{command}" if reply_to else command

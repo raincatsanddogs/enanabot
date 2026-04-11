@@ -132,6 +132,18 @@ function on_command(name, options = {}) {
 
 const PERMISSION_LEVELS = { admin: 3, user: 2, guest: 1 };
 
+function normalize_player_name(name) {
+    if (typeof name !== 'string') return '';
+    return name.trim().toLowerCase();
+}
+
+function normalize_player_list(list_like) {
+    if (!Array.isArray(list_like)) return [];
+    return list_like
+        .map((item) => normalize_player_name(String(item)))
+        .filter((item) => item.length > 0);
+}
+
 /**
  * 检查实际权限是否满足指令要求。
  * @param {string} actual - 触发者权限
@@ -148,12 +160,13 @@ function check_permission(actual, required) {
  * @returns {'admin' | 'user' | 'guest'}
  */
 function get_permission_level(player_name) {
-    const admin_list = Array.isArray(config.admin_players) ? config.admin_players : [];
-    const user_list = Array.isArray(config.user_players) ? config.user_players : [];
-    const guest_list = Array.isArray(config.guest_players) ? config.guest_players : [];
-    if (admin_list.includes(player_name)) return 'admin';
-    if (user_list.includes(player_name)) return 'user';
-    if (guest_list.includes(player_name)) return 'guest';
+    const normalized_name = normalize_player_name(player_name);
+    const admin_list = normalize_player_list(config.admin_players);
+    const user_list = normalize_player_list(config.user_players);
+    const guest_list = normalize_player_list(config.guest_players);
+    if (admin_list.includes(normalized_name)) return 'admin';
+    if (user_list.includes(normalized_name)) return 'user';
+    if (guest_list.includes(normalized_name)) return 'guest';
     return 'guest';
 }
 

@@ -59,6 +59,16 @@ function normalizeIdList(listLike) {
   });
 }
 
+function normalizePlayerNameList(listLike) {
+  if (!Array.isArray(listLike)) {
+    return [];
+  }
+
+  return listLike
+    .map((item) => (item === undefined || item === null ? '' : String(item).trim()))
+    .filter((item) => item.length > 0);
+}
+
 // send_group is the only accepted group whitelist field.
 config.send_group = normalizeIdList(
   config.send_group
@@ -76,25 +86,26 @@ config.forward_prefix = (
 ).toString().trim() || '[群聊]>>';
 
 // Whisper 指令鉴权配置
-config.admin_players = Array.isArray(config.admin_players)
-  ? config.admin_players
-  : Array.isArray(connectConfig.admin_players)
-    ? connectConfig.admin_players
-    : [];
+config.admin_players = normalizePlayerNameList(
+  config.admin_players
+  ?? config.adminPlayers
+  ?? connectConfig.admin_players
+  ?? connectConfig.adminPlayers
+);
 
-config.user_players = Array.isArray(config.user_players)
-  ? config.user_players
-  : Array.isArray(connectConfig.user_players)
-    ? connectConfig.user_players
-    : [];
+config.user_players = normalizePlayerNameList(
+  config.user_players
+  ?? config.userPlayers
+  ?? connectConfig.user_players
+  ?? connectConfig.userPlayers
+);
 
-config.guest_players = Array.isArray(config.guest_players)
-  ? config.guest_players
-  : Array.isArray(connectConfig.guest_players)
-    ? connectConfig.guest_players
-    : Array.isArray(connectConfig.guestPlayers)
-      ? connectConfig.guestPlayers
-      : [];
+config.guest_players = normalizePlayerNameList(
+  config.guest_players
+  ?? config.guestPlayers
+  ?? connectConfig.guest_players
+  ?? connectConfig.guestPlayers
+);
 
 config.whisper_command_prefix = (
   config.whisper_command_prefix
