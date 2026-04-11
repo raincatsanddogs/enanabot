@@ -94,7 +94,7 @@ function wait_for_sethome_confirm(bot, home_name, timeout_ms = 8000) {
 /**
  * 处理 TPA 请求的自动接受流程。
  * 1. 同步上锁（occupied = true）
- * 2. 执行 /sethome tpa_backup
+ * 2. 执行 /sethome tpabackup
  * 3. 等待服务器确认
  * 4. 执行 /tpaccept（或对应指令）
  * 5. 通过 IPC 通知 Python 端
@@ -117,11 +117,11 @@ async function handle_tpa_auto_accept(bot, tpa_info) {
     process.stdout.write(occupied_msg);
 
     // 2. 执行 sethome
-    bot.chat('/sethome tpa_backup');
+    bot.chat('/sethome tpabackup');
 
     try {
         // 3. 等待服务器确认 sethome 成功
-        await wait_for_sethome_confirm(bot, 'tpa_backup', 8000);
+        await wait_for_sethome_confirm(bot, 'tpabackup', 8000);
 
         // 4. 执行 tpaccept
         bot.chat(accept_command);

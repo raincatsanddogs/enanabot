@@ -339,6 +339,7 @@ async def _dispatch_tpa_command(
                 await _execute_tpa_back()
             except Exception as e:
                 logger.warning(f"TPA off 时返回原位失败: {e}")
+                return f"关闭失败: {e}"
         
         TPA_STATE["enabled"] = False
         TPA_STATE["occupied"] = False
@@ -404,17 +405,20 @@ async def _push_tpa_state_to_js() -> None:
 
 
 async def _execute_tpa_back() -> str:
-    """执行 TPA 返回操作：传送到 tpa_backup 并删除。"""
+    """执行 TPA 返回操作：传送到 tpabackup 并删除。"""
     global TPA_STATE
-    
+
     # 通过 IPC 请求 JS 执行 home tp
-    try:
-        await _send_home_command("tp", "tpa_backup")
-    except Exception as e:
-        logger.warning(f"传送到 tpa_backup 失败: {e}")
-    
+    tp_result = await _send_home_command("tp", "tpabackup")
+    if not bool(tp_result.get("success")):
+        error = tp_result.get("error") or "未知错误"
+        raise RuntimeError(f"传送到 tpabackup 失败: {error}")
+
     # 删除 backup home
-    await _send_home_command("remove", "tpa_backup")
+    remove_result = await _send_home_command("remove", "tpabackup")
+    if not bool(remove_result.get("success")):
+        error = remove_result.get("error") or "未知错误"
+        raise RuntimeError(f"删除 tpabackup 失败: {error}")
     
     # 重置状态
     TPA_STATE["occupied"] = False
@@ -424,7 +428,7 @@ async def _execute_tpa_back() -> str:
     
     # 推送状态到 JS
     await _push_tpa_state_to_js()
-    
+
     return "已返回原位置"
 
 
