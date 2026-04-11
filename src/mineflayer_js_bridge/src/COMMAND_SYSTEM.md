@@ -101,7 +101,7 @@ async function processMessage(bot, type, username, message) {
 * **参数**：
   * `name` (String): 指令名，例如 `"tpa"`。如果用户输入 `#tpa` 或 `#TPA` 均可触发。
   * `options` (Object): 
-    * `permission` (String): 默认为 `'admin'`。可选值为 `'admin'` 或 `'user'`。
+    * `permission` (String): 默认为 `'admin'`。可选值为 `'admin'`、`'user'` 或 `'guest'`。
     * `description` (String): 指令的中文描述信息，方便作为备注。
 * **返回**：包含 `handle` 函数的执行器对象。
 
@@ -114,7 +114,7 @@ async function processMessage(bot, type, username, message) {
   * `session.command_name` (String): 命中的指令名称（一律转换为小写格式）。
   * `session.args` (Array&lt;String&gt;): 按空格切割后的所有参数组成。比如 `#tpa status` 得到的是 `['status']`。
   * `session.raw_text` (String): 指令完整的原始文本。
-  * `session.permission` (String): 该指令触发者的权限等级，`'admin'` 或 `'user'`。
+  * `session.permission` (String): 该指令触发者的权限等级，`'admin'`、`'user'` 或 `'guest'`。
   * `session.source_type` (String): 触发方式（聊天/私聊等）。
 
 * **方法**：
@@ -136,9 +136,11 @@ async function processMessage(bot, type, username, message) {
 指令权限等级根据 `configs/config.js` 文件中的列表动态判定。
 
 * 如果配置文件中的 `config.whisper_command_prefix` 有值，那么它将作为指令前缀（默认是 `#`）。如果用户要触发 `tpa` 指令，需要在游戏里输入 `#tpa`。
+* 名称存在于 `config.guest_players` 的玩家会被判定为 `guest` 等级（可选显式配置）。
 * 只有名称存在于 `config.user_players` 的玩家会被判定为 `user` 等级。
 * 名称存在于 `config.admin_players` 的玩家会被判定为 `admin` 等级。
-* **权限继承**：要求 `user` 权限的指令，`admin` 玩家也可触发。要求 `admin` 的，`user` 则不能触发。
+* 若名称未命中 `admin_players/user_players`，默认判定为 `guest`。
+* **权限继承**：`admin > user > guest`。要求 `guest` 权限时，三者都可触发；要求 `user` 时，`admin/user` 可触发；要求 `admin` 时仅 `admin` 可触发。
 
 若玩家权限不符合触发要求，不仅无法执行指令流，指令系统内部还会**拦截该消息并向报错用户发送一条私聊错误提示**。这条错误并不会抛向 Python 层。
 

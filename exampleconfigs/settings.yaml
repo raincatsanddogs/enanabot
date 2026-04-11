@@ -16,6 +16,10 @@ connect:
   #  send_group: [123456789] 仅这些群号的消息会转发到 MC（严格白名单，留空表示不转发）
   #  ignore_user: [10001] 这些用户的消息不会转发到 MC
   #  forward_prefix: "[群聊]>>" 发往 MC 的桥接消息前缀
+  #  admin_players: ["player1"] 可通过 MC 私聊执行所有指令的玩家名列表（管理员）
+  #  user_players: ["player2"] 可通过 MC 私聊执行部分安全指令的玩家名列表（普通用户）
+  #  guest_players: ["player3"] 可选显式访客列表；未命中 admin/user 的玩家默认同样视为 guest
+  #  whisper_command_prefix: "#" MC 私聊指令前缀，如 #mc status
   timeout: 10
   retry: 3
   host: "localhost"
@@ -23,4 +27,8 @@ connect:
   send_group: []
   ignore_user: []
   forward_prefix: "[群聊]>>"
+  admin_players: []
+  user_players: []
+  guest_players: []
+  whisper_command_prefix: "#"
   
