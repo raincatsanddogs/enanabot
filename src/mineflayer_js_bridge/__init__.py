@@ -207,7 +207,7 @@ async def dispatch_command(
 
     # home 指令
     if command == "home":
-        return await _dispatch_home_command(args)
+        return await _dispatch_home_command(args, whisper_target=player_name)
 
     # git 指令
     if command == "git":
@@ -435,7 +435,10 @@ async def _execute_tpa_back() -> str:
 
 # ===== Home 指令处理 =====
 
-async def _dispatch_home_command(args: list[str]) -> str:
+async def _dispatch_home_command(
+    args: list[str],
+    whisper_target: str | None = None,
+) -> str:
     """处理 home 子指令。"""
     if not args:
         return "用法: home <list|tp|set|remove> [名称]"
@@ -445,7 +448,9 @@ async def _dispatch_home_command(args: list[str]) -> str:
     
     if sub == "list":
         try:
-            result = await _send_home_command("list", timeout=7.0)
+            result = await _send_home_command("list", timeout=7.0, whisper_target=whisper_target)
+            if result.get("direct_replied"):
+                return ""
             if result.get("success"):
                 homes = result.get("result", [])
                 if isinstance(homes, list):
@@ -462,10 +467,12 @@ async def _dispatch_home_command(args: list[str]) -> str:
     if sub == "tp":
         if not name:
             # 没有指定名称时，返回 home 列表
-            return await _dispatch_home_command(["list"])
+            return await _dispatch_home_command(["list"], whisper_target=whisper_target)
         
         try:
-            result = await _send_home_command("tp", name, timeout=10.0)
+            result = await _send_home_command("tp", name, timeout=10.0, whisper_target=whisper_target)
+            if result.get("direct_replied"):
+                return ""
             if result.get("success"):
                 return f"已传送到 home: {name}"
             return f"传送失败: {result.get('error', '未知错误')}"
@@ -479,7 +486,9 @@ async def _dispatch_home_command(args: list[str]) -> str:
             return "用法: home set <名称>"
         
         try:
-            result = await _send_home_command("set", name, timeout=5.0)
+            result = await _send_home_command("set", name, timeout=5.0, whisper_target=whisper_target)
+            if result.get("direct_replied"):
+                return ""
             if result.get("success"):
                 return f"已设置 home: {name}"
             return f"设置失败: {result.get('error', '未知错误')}"
@@ -493,7 +502,9 @@ async def _dispatch_home_command(args: list[str]) -> str:
             return "用法: home remove <名称>"
         
         try:
-            result = await _send_home_command("remove", name, timeout=5.0)
+            result = await _send_home_command("remove", name, timeout=5.0, whisper_target=whisper_target)
+            if result.get("direct_replied"):
+                return ""
             if result.get("success"):
                 return f"已删除 home: {name}"
             return f"删除失败: {result.get('error', '未知错误')}"
@@ -510,6 +521,7 @@ async def _send_home_command(
     name: str | None = None,
     timeout: float = 10.0,
     reply_to: str | None = None,
+    whisper_target: str | None = None,
 ) -> dict:
     """发送 home 命令到 JS 并等待结果。"""
     global js_process
@@ -537,6 +549,7 @@ async def _send_home_command(
             "command": command,
             "name": name,
             "reply_to": normalized_reply_to,
+            "whisper_target": whisper_target,
         })
         
         js_process.stdin.write(encoded.encode("utf-8"))
@@ -1161,6 +1174,9 @@ async def _handle_whisper_command(data: dict[str, object]) -> None:
     except Exception as e:
         result = f"指令执行失败：{e}"
         logger.error(f"whisper 指令执行异常: {e}")
+
+    if isinstance(result, str) and not result.strip():
+        return
 
     # 通过 MC whisper 回复
     await _send_whisper_reply(player_name, result)

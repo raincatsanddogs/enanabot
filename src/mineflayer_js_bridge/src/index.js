@@ -221,69 +221,158 @@ function enqueue_home_command(bot, data) {
     return HOME_COMMAND_QUEUE;
 }
 
+function format_home_whisper_message(command, success, result, error, name) {
+    const errMsg = error || '未知错误';
+
+    if (command === 'list') {
+        if (!success) {
+            return `获取 home 列表失败: ${errMsg}`;
+        }
+        if (Array.isArray(result)) {
+            if (result.length === 0) {
+                return '没有设置任何 home';
+            }
+            return `Home 列表: ${result.join(', ')}`;
+        }
+        return `Home 列表: ${result}`;
+    }
+
+    if (command === 'tp') {
+        if (success) {
+            return `已传送到 home: ${name || result || ''}`.trim();
+        }
+        return `传送失败: ${errMsg}`;
+    }
+
+    if (command === 'set') {
+        if (success) {
+            return `已设置 home: ${name || result || ''}`.trim();
+        }
+        return `设置失败: ${errMsg}`;
+    }
+
+    if (command === 'remove') {
+        if (success) {
+            return `已删除 home: ${name || result || ''}`.trim();
+        }
+        return `删除失败: ${errMsg}`;
+    }
+
+    return success ? String(result || '') : `操作失败: ${errMsg}`;
+}
+
+function emit_home_result(bot, payload, options = {}) {
+    const whisperTarget = typeof options.whisperTarget === 'string' ? options.whisperTarget.trim() : '';
+    const name = typeof options.name === 'string' ? options.name : '';
+    const shouldDirectReply = whisperTarget.length > 0;
+
+    const envelopePayload = shouldDirectReply
+        ? { ...payload, direct_replied: true }
+        : payload;
+
+    process.stdout.write(ipc.encode(ipc.ACTION_HOME_RESULT, envelopePayload));
+
+    if (!shouldDirectReply) {
+        return;
+    }
+
+    const message = format_home_whisper_message(
+        payload.command,
+        Boolean(payload.success),
+        payload.result,
+        payload.error,
+        name
+    );
+
+    if (message) {
+        bot.whisper(whisperTarget, message);
+    }
+}
+
+const HOME_ALL_SUB_COMMANDS = new Set(['list', 'tp', 'set', 'remove']);
+const HOME_NON_ADMIN_ALLOWED_SUB_COMMANDS = new Set(['list']);
+
+function build_home_full_command(sub, name) {
+    if (!sub) {
+        return 'home';
+    }
+    if (name) {
+        return `home ${sub} ${name}`;
+    }
+    return `home ${sub}`;
+}
+
+function can_execute_home_sub_command(permission, sub) {
+    if (permission === 'admin') {
+        return true;
+    }
+    return HOME_NON_ADMIN_ALLOWED_SUB_COMMANDS.has(sub);
+}
+
+async function execute_home_operation(bot, command, name) {
+    const { listHomes, tpToHome } = require('./src/handler/containerUtils');
+
+    if (command === 'list') {
+        const homes = await listHomes(bot);
+        return {
+            success: true,
+            result: homes,
+        };
+    }
+
+    if (command === 'tp') {
+        await tpToHome(bot, name);
+        return {
+            success: true,
+            result: name,
+        };
+    }
+
+    if (command === 'set') {
+        bot.chat(`/sethome ${name}`);
+        return {
+            success: true,
+            result: name,
+        };
+    }
+
+    if (command === 'remove') {
+        bot.chat(`/delhome ${name}`);
+        return {
+            success: true,
+            result: name,
+        };
+    }
+
+    return {
+        success: false,
+        error: `未知 home 子指令: ${command}`,
+    };
+}
+
 /**
  * 处理来自 Python 的 home 命令请求。
  * @param {object} bot
  * @param {object} data - { command, name, reply_to }
  */
 async function handle_home_command(bot, data) {
-    const { command, name, reply_to } = data;
+    const { command, name, reply_to, whisper_target } = data;
     try {
-        const { listHomes, tpToHome } = require('./src/handler/containerUtils');
-
-        if (command === 'list') {
-            const homes = await listHomes(bot);
-            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
-                command: 'list',
-                reply_to: reply_to || '',
-                success: true,
-                result: homes,
-            });
-            process.stdout.write(result);
-        } else if (command === 'tp') {
-            await tpToHome(bot, name);
-            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
-                command: 'tp',
-                reply_to: reply_to || '',
-                success: true,
-                result: name,
-            });
-            process.stdout.write(result);
-        } else if (command === 'set') {
-            bot.chat(`/sethome ${name}`);
-            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
-                command: 'set',
-                reply_to: reply_to || '',
-                success: true,
-                result: name,
-            });
-            process.stdout.write(result);
-        } else if (command === 'remove') {
-            bot.chat(`/delhome ${name}`);
-            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
-                command: 'remove',
-                reply_to: reply_to || '',
-                success: true,
-                result: name,
-            });
-            process.stdout.write(result);
-        } else {
-            const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
-                command: command,
-                reply_to: reply_to || '',
-                success: false,
-                error: `未知 home 子指令: ${command}`,
-            });
-            process.stdout.write(result);
-        }
+        const operation = await execute_home_operation(bot, command, name);
+        emit_home_result(bot, {
+            command: command,
+            reply_to: reply_to || '',
+            success: operation.success,
+            result: operation.result,
+            error: operation.error,
+        }, { whisperTarget: whisper_target, name });
     } catch (e) {
-        const result = ipc.encode(ipc.ACTION_HOME_RESULT, {
+        emit_home_result(bot, {
             command: command,
             reply_to: reply_to || '',
             success: false,
             error: e.message || String(e),
-        });
-        process.stdout.write(result);
+        }, { whisperTarget: whisper_target, name });
     }
 }
 
@@ -343,6 +432,48 @@ tpa_command.handle(async (session) => {
     await session.finish(`未知子指令: ${sub}。可用: status`);
 });
 
+const home_command = on_command('home', { permission: 'guest', description: 'Home 管理指令' });
+home_command.handle(async (session) => {
+    const usage = '用法: #home <list|tp|set|remove> [名称]';
+    const sub_raw = session.args[0];
+
+    if (!sub_raw) {
+        await session.finish(usage);
+    }
+
+    const sub = String(sub_raw).toLowerCase();
+    const name = session.args[1];
+    const full_command = build_home_full_command(sub, name);
+
+    if (!HOME_ALL_SUB_COMMANDS.has(sub)) {
+        await session.finish(session.permission === 'admin' ? usage : `权限不足：${full_command}`);
+    }
+
+    // 对齐 Python 侧规则：非 admin 仅允许 home list
+    if (!can_execute_home_sub_command(session.permission, sub)) {
+        await session.finish(`权限不足：${full_command}`);
+    }
+
+    if (sub === 'tp' && !name) {
+        const operation = await execute_home_operation(session.bot, 'list');
+        const message = format_home_whisper_message('list', operation.success, operation.result, operation.error, '');
+        await session.finish(message);
+    }
+
+    if ((sub === 'set' || sub === 'remove') && !name) {
+        await session.finish(`用法: #home ${sub} <名称>`);
+    }
+
+    try {
+        const operation = await execute_home_operation(session.bot, sub, name);
+        const message = format_home_whisper_message(sub, operation.success, operation.result, operation.error, name);
+        await session.finish(message);
+    } catch (e) {
+        const message = format_home_whisper_message(sub, false, '', e.message || String(e), name);
+        await session.finish(message);
+    }
+});
+
 const echo = on_command('echo', { permission: 'guest', description: 'Echo 回显测试指令' });
 echo.handle(async (session) => {
     const response = session.args.join(' ');
@@ -353,12 +484,15 @@ const help = on_command('help', { permission: 'guest', description: '显示帮�
 help.handle(async (session) => {
     const sub = session.args[0];
     if (!sub) {
-        response = '可用指令: tpa, echo, help。使用 "#help <指令名>" 查看指令详情。';
+        response = '可用指令: tpa, home, echo, help。使用 "#help <指令名>" 查看指令详情。';
         await session.finish(response);
     }
     switch (sub) {
         case 'tpa':
             await session.finish('tpa 指令: 查看 TPA 状态。\n用法: #tpa [status|on|off|back]\n子指令 status: 查看状态；\n on: 开启自动接受；\n off: 关闭自动接受；\n back: 释放占用');
+            break;
+        case 'home':
+            await session.finish('home 指令: 管理 home。\n用法: #home <list|tp|set|remove> [名称]\n非 admin 仅可使用 list。');
             break;
         case 'echo':
             await session.finish('echo 指令: 回显测试。用法: #echo <文本>');

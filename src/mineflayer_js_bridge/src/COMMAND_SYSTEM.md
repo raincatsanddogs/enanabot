@@ -18,6 +18,8 @@
 
 ## 快速开始与示例
 
+当前内置指令已采用统一格式注册：`tpa`、`home`、`echo`、`help`。
+
 核心模块位于 `src/handler/commandManager.js`：
 
 ```javascript
@@ -151,3 +153,11 @@ async function processMessage(bot, type, username, message) {
 **TPA 业务说明：** 由于 TPA（传送请求）依赖于机器人实时所在游戏的状态（是否在挂机、在睡觉、或者正在忙碌），这如果放在 Python 端会因为网络或者性能导致接受了无效传送，或者造成死锁。因此诸如 `#tpa status`、`#tpa back` 这类强交互的内部功能，都是专门用此 JS 桥接指令系统实现的，实现逻辑可参考 `index.js` 底部的 `tpa_cmd.handle` 以及 `_TPA_LOCK` 机制。
 
 > 注意：为了减少冗余，Python 端的 QQ 群聊若下达相关控制指令，实际上是利用 IPC JSON `server_cmd` 推送特定的后台指令让桥接再转换为对应的逻辑，并非把所有控制放在 Python 里硬写。两者相辅相成。
+
+## Home 指令说明
+
+`home` 指令已按统一 `on_command + session` 格式在 JS 端实现。
+
+- MC 私聊/聊天触发 `#home` 时，会优先由 JS 指令系统拦截并本地处理。
+- Python 侧仍保留 `home` 入口用于兼容 QQ 指令与既有流程。
+- 权限规则对齐 Python：`admin` 可执行 `list/tp/set/remove`，非 `admin` 仅允许 `home list`。
