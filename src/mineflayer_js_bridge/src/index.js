@@ -326,7 +326,7 @@ help.handle(async (session) => {
     }
     switch (sub) {
         case 'tpa':
-            await session.finish('tpa 指令: 查看 TPA 状态。用法: #tpa [status|on|off|back]\n子指令 status: 查看状态；\n on: 开启自动接受；\n off: 关闭自动接受；\n back: 释放占用');
+            await session.finish('tpa 指令: 查看 TPA 状态。\n用法: #tpa [status|on|off|back]\n子指令 status: 查看状态；\n on: 开启自动接受；\n off: 关闭自动接受；\n back: 释放占用');
             break;
         case 'echo':
             await session.finish('echo 指令: 回显测试。用法: #echo <文本>');
