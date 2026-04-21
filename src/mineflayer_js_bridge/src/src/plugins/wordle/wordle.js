@@ -1,6 +1,7 @@
 const { on } = require('process');
 const { on_command } = require('../../handler/commandManager');
 const fs = require("fs")
+const path = require("path")
 
 //游戏状态全局变量
 let gameActive = false;
@@ -146,12 +147,12 @@ wordle.handle(async (session) =>{
 
 function read_word_list() {
     // Implementation for reading word list
-    const data1 = fs.readFileSync('wordlist.txt', 'utf8');
-    wordle_list = data1.split('\n').filter(word => word.length === 5);
+    const data1 = fs.readFileSync(path.join(__dirname, 'wordle_list', 'filtered-wordle-words.txt'), 'utf8');
+    wordle_list = data1.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
     wordle_list_set = new Set(wordle_list);
 
-    const data2 = fs.readFileSync('guesslist.txt', 'utf8');
-    guess_list = data2.split('\n').filter(word => word.length === 5);
+    const data2 = fs.readFileSync(path.join(__dirname, 'wordle_list', 'words.txt'), 'utf8');
+    guess_list = data2.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
     guess_list_set = new Set(guess_list);
 
     return 0;

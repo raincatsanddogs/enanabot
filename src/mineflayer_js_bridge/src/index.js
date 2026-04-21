@@ -10,6 +10,7 @@ const { handle_message, group_msg_handler, extract_whisper_info, extract_chat_in
 const { init_bot, on_command, dispatch_command } = require('./src/handler/commandManager');
 const homeCache = require('./src/handler/homeCache');
 const ipc = require('./src/ipc/ipc_protocol');
+require('./src/plugins/wordle/wordle');
 
 // ===== TPA 状态管理（JS 端持久化） =====
 const TPA_STATE_FILE = path.join(__dirname, '../../../../configs/tpa_state.json');
