@@ -790,6 +790,9 @@ help.handle(async (session) => {
         case 'send':
             await session.finish('send 指令: 发送任意文本到聊天框。用法: #send <文本>');
             break;
+        case 'wordle':
+            await session.finish('wordle 指令: 玩一个单词猜谜游戏。用法: \n#wordle [start|stop]\n#guess <单词>\n#hint');
+            break;
     }
 });
 

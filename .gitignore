@@ -139,3 +139,4 @@ dmypy.json
 /configs/
 .temp/
 session.html
+.copilot-tracking/
