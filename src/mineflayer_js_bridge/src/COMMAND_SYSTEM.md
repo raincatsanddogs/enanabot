@@ -161,3 +161,21 @@ async function processMessage(bot, type, username, message) {
 - MC 私聊/聊天触发 `#home` 时，会优先由 JS 指令系统拦截并本地处理。
 - Python 侧仍保留 `home` 入口用于兼容 QQ 指令与既有流程。
 - 权限规则对齐 Python：`admin` 可执行 `list/tp/set/remove`，非 `admin` 仅允许 `home list`。
+
+## 公屏回显过滤（可配置）
+
+当 JS 内部指令使用 `bot.chat(...)` 在公屏回显时，服务器会把这条消息再次推送给桥接端。
+若不处理，这条回显会继续走 IPC 被转发到 Python。
+
+当前桥接端支持用固定前缀 + bot 名识别进行过滤，配置项位于 `connect`：
+
+- `command_echo_filter_enabled`：是否启用过滤（默认 `true`）
+- `command_echo_prefix`：公屏回显固定前缀（默认 `__WORDLE_CMD__`）
+- `command_echo_bot_names`：bot 在服务器内可能出现的显示名别名列表（可选）
+
+匹配逻辑：
+
+1. 消息文本以前缀 `command_echo_prefix` 开头
+2. 发送者名字命中 bot 名集合（运行时 `bot.username` + 当前配置档账号名 + `command_echo_bot_names`）
+
+满足上述条件时，该条回显只在 MC 内展示，不会再转发到 Python。

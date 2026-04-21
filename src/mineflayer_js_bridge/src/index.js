@@ -72,6 +72,13 @@ try {
 
 const profile = (startArgs[1] - 1) || 0;
 
+const COMMAND_ECHO_FILTER_ENABLED = config.command_echo_filter_enabled !== false;
+const COMMAND_ECHO_PREFIX = (
+    typeof config.command_echo_prefix === 'string' && config.command_echo_prefix.trim()
+)
+    ? config.command_echo_prefix.trim()
+    : '__WORDLE_CMD__';
+
 function build_forward_message(message) {
     const normalized = (message || '').trim();
     if (!normalized) {
@@ -123,21 +130,59 @@ function parse_prefixed_command(raw_text) {
     };
 }
 
-const WORDLE_ECHO_PREFIX = '| ';
+function normalize_player_name(name) {
+    if (typeof name !== 'string') {
+        return '';
+    }
+
+    return name.trim().toLowerCase();
+}
+
+function resolve_echo_bot_name_set(runtime_bot_name) {
+    const names = [];
+
+    names.push(runtime_bot_name);
+
+    const configured_profile_name =
+        Array.isArray(config.account)
+        && config.account[profile]
+        && typeof config.account[profile].name === 'string'
+        ? config.account[profile].name
+        : '';
+    names.push(configured_profile_name);
+
+    if (Array.isArray(config.command_echo_bot_names)) {
+        names.push(...config.command_echo_bot_names);
+    }
+
+    return new Set(
+        names
+            .map((item) => normalize_player_name(item))
+            .filter((item) => item.length > 0)
+    );
+}
 
 function should_skip_wordle_echo(jsonMsg, bot_name) {
+    if (!COMMAND_ECHO_FILTER_ENABLED) {
+        return false;
+    }
+
+    if (!COMMAND_ECHO_PREFIX) {
+        return false;
+    }
+
     const chat_info = extract_chat_info(jsonMsg);
     if (!chat_info || !chat_info.sender_name || !chat_info.chat_text) {
         return false;
     }
 
-    const sender_name = normalize_command_text(chat_info.sender_name).toLowerCase();
-    const self_name = normalize_command_text(bot_name || '').toLowerCase();
-    if (!sender_name || !self_name || sender_name !== self_name) {
+    const sender_name = normalize_player_name(chat_info.sender_name);
+    const bot_name_set = resolve_echo_bot_name_set(bot_name);
+    if (!sender_name || !bot_name_set.has(sender_name)) {
         return false;
     }
 
-    return normalize_command_text(chat_info.chat_text).startsWith(WORDLE_ECHO_PREFIX);
+    return normalize_command_text(chat_info.chat_text).startsWith(COMMAND_ECHO_PREFIX);
 }
 
 function stringify_error(err) {

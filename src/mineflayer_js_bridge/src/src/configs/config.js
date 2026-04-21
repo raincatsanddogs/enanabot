@@ -114,5 +114,42 @@ config.whisper_command_prefix = (
   ?? '#'
 ).toString().trim() || '#';
 
+config.command_echo_filter_enabled = (() => {
+  const raw = (
+    config.command_echo_filter_enabled
+    ?? config.commandEchoFilterEnabled
+    ?? connectConfig.command_echo_filter_enabled
+    ?? connectConfig.commandEchoFilterEnabled
+  );
+
+  if (raw === undefined || raw === null) {
+    return true;
+  }
+
+  if (typeof raw === 'string') {
+    const lowered = raw.trim().toLowerCase();
+    if (['false', '0', 'off', 'no'].includes(lowered)) return false;
+    if (['true', '1', 'on', 'yes'].includes(lowered)) return true;
+  }
+
+  return Boolean(raw);
+})();
+
+config.command_echo_prefix = (
+  config.command_echo_prefix
+  ?? config.commandEchoPrefix
+  ?? connectConfig.command_echo_prefix
+  ?? connectConfig.commandEchoPrefix
+  ?? '__WORDLE_CMD__'
+).toString().trim() || '__WORDLE_CMD__';
+
+config.command_echo_bot_names = normalizePlayerNameList(
+  config.command_echo_bot_names
+  ?? config.commandEchoBotNames
+  ?? connectConfig.command_echo_bot_names
+  ?? connectConfig.commandEchoBotNames
+  ?? []
+);
+
 // 4. 导出对象
 module.exports = config;

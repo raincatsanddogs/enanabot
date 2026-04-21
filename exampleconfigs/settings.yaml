@@ -22,6 +22,9 @@ connect:
   #  以上列表请填写 MC 玩家名（不是 QQ 号），支持大小写无关匹配
   #  示例：admin_players: ["doveoverthere"]
   #  whisper_command_prefix: "#" MC 私聊指令前缀，如 #mc status
+  #  command_echo_filter_enabled: true 是否过滤 JS 内部公屏指令回显，避免回显再转发到 Python
+  #  command_echo_prefix: "__WORDLE_CMD__" JS 内部公屏回显前缀（wordle 也使用该前缀）
+  #  command_echo_bot_names: ["机器人昵称"] bot 在服务器内显示名别名列表（用于匹配回显发送者）
   timeout: 10
   retry: 3
   host: "localhost"
@@ -33,4 +36,7 @@ connect:
   user_players: []
   guest_players: []
   whisper_command_prefix: "#"
+  command_echo_filter_enabled: true
+  command_echo_prefix: "__WORDLE_CMD__"
+  command_echo_bot_names: []
   

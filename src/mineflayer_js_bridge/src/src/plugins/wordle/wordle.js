@@ -1,12 +1,17 @@
 const { on } = require('process');
 const { on_command } = require('../../handler/commandManager');
+const config = require('../../configs/config');
 const fs = require("fs")
 const path = require("path")
 
-const WORDLE_ECHO_PREFIX = '| ';
+const WORDLE_ECHO_PREFIX = (
+    typeof config.command_echo_prefix === 'string' && config.command_echo_prefix.trim()
+)
+    ? config.command_echo_prefix.trim()
+    : '__WORDLE_CMD__';
 
 function wordle_reply(session, text) {
-    session.bot.chat(`${WORDLE_ECHO_PREFIX}${text}`);
+    session.bot.chat(`${WORDLE_ECHO_PREFIX} ${text}`);
 }
 
 //游戏状态全局变量
