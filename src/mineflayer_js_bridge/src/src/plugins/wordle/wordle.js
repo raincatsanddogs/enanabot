@@ -31,6 +31,14 @@ const wordle_status = Array.from({ length: rows }, () =>
   Array.from({ length: cols }, () => ({ letter: '', status: '' }))
 );
 
+function reset_wordle_status() {
+    for (let i = 0; i < wordle_status.length; i++) {
+        for (let j = 0; j < wordle_status[i].length; j++) {
+            wordle_status[i][j] = { letter: '', status: '' };
+        }
+    }
+}
+
 //猜词状态数组
 /*
 [
@@ -51,6 +59,11 @@ guess.handle(async (session) =>
     if (!gameActive) {
         wordle_reply(session, '没有正在进行中的wordle,请输入#wordle start开始游戏');
         // No active game
+        return;
+    }
+    if (attempts >= maxAttempts) {
+        gameActive = false;
+        wordle_reply(session, `游戏结束！正确单词是${targetWord}`);
         return;
     }
     const arg = session.args[0];
@@ -113,7 +126,7 @@ guess.handle(async (session) =>
         gameActive = false;
         return;
     }
-    if (attempts >= maxAttempts) {
+    if (attempts >= maxAttempts - 1) {
         wordle_reply(session, `游戏结束！正确单词是${targetWord}`);
         gameActive = false;
         return;
@@ -149,6 +162,7 @@ wordle.handle(async (session) =>{
                 gameActive = true;
                 targetWord = guess_list[getRndInteger(0, guess_list.length)];
                 attempts = 0;
+                reset_wordle_status();
                 wordle_reply(session, 'wordle已开始，输入#guess <五字母单词>开始猜词');
             } else {
                 wordle_reply(session, '已有进行中的wordle，输入#wordle stop可结束当前游戏');
