@@ -445,6 +445,30 @@ function extract_whisper_info(jsonMsg) {
  */
 function extract_chat_info(jsonMsg) {
     try {
+        // 原版 chat（translate: chat.type.*）
+        const translate = jsonMsg.translate || (jsonMsg.json && jsonMsg.json.translate);
+        if (typeof translate === 'string' && translate.startsWith('chat.type.')) {
+            const withArr = jsonMsg.json && jsonMsg.json.with;
+            if (!Array.isArray(withArr) || withArr.length < 2) return null;
+
+            const senderNode = withArr[0];
+            let sender_name = '';
+            if (typeof senderNode === 'string') {
+                sender_name = senderNode.trim();
+            } else if (senderNode && typeof senderNode === 'object') {
+                if (senderNode.hover_event && typeof senderNode.hover_event.name === 'string') {
+                    sender_name = senderNode.hover_event.name.trim();
+                } else {
+                    sender_name = extract_text_component(senderNode).trim();
+                }
+            }
+
+            const chat_text = extract_text_component(withArr[1]).trim();
+            if (!sender_name || !chat_text) return null;
+
+            return { sender_name, chat_text };
+        }
+
         const extras = (jsonMsg.json && jsonMsg.json.extra) || [];
         const first = extras[0];
         if (!first) return null;

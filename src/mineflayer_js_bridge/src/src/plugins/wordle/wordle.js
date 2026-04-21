@@ -40,6 +40,7 @@ guess.handle(async (session) =>
     if (!gameActive) {
         session.bot.chat('没有正在进行中的wordle,请输入#wordle start开始游戏');
         // No active game
+        return;
     }
     const arg = session.args[0];
     if (!arg) {
@@ -137,10 +138,21 @@ wordle.handle(async (session) =>{
                 gameActive = true;
                 targetWord = guess_list[getRndInteger(0, guess_list.length)];
                 attempts = 0;
+                session.bot.chat('wordle已开始，输入#guess <五字母单词>开始猜词');
+            } else {
+                session.bot.chat('已有进行中的wordle，输入#wordle stop可结束当前游戏');
             }
             break;
         case 'stop':
-            gameActive = false;
+            if (gameActive) {
+                gameActive = false;
+                session.bot.chat(`已结束当前wordle，答案是${targetWord}`);
+            } else {
+                session.bot.chat('当前没有正在进行中的wordle');
+            }
+            break;
+        default:
+            session.bot.chat('用法: #wordle <start|stop>');
             break;
     }
 });

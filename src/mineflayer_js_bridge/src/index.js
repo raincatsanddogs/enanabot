@@ -971,8 +971,8 @@ async function main() {
                 return;
             }
 
-            // 非原版 chat → 也可触发 JS 端指令
-            if (post_msg.type === 'chat') {
+            // 公屏聊天（非原版 chat + 原版 chat.type.*）均可触发 JS 端指令
+            if (post_msg.type === 'chat' || post_msg.type === 'server_cmd') {
                 const chat_info = extract_chat_info(jsonMsg);
                 if (chat_info && chat_info.sender_name && chat_info.chat_text) {
                     const parsed_chat_command = parse_prefixed_command(chat_info.chat_text);
