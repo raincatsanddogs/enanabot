@@ -123,6 +123,23 @@ function parse_prefixed_command(raw_text) {
     };
 }
 
+const WORDLE_ECHO_PREFIX = '| ';
+
+function should_skip_wordle_echo(jsonMsg, bot_name) {
+    const chat_info = extract_chat_info(jsonMsg);
+    if (!chat_info || !chat_info.sender_name || !chat_info.chat_text) {
+        return false;
+    }
+
+    const sender_name = normalize_command_text(chat_info.sender_name).toLowerCase();
+    const self_name = normalize_command_text(bot_name || '').toLowerCase();
+    if (!sender_name || !self_name || sender_name !== self_name) {
+        return false;
+    }
+
+    return normalize_command_text(chat_info.chat_text).startsWith(WORDLE_ECHO_PREFIX);
+}
+
 function stringify_error(err) {
     if (err === undefined || err === null) {
         return '未知错误';
@@ -973,6 +990,11 @@ async function main() {
 
             // 公屏聊天（非原版 chat + 原版 chat.type.*）均可触发 JS 端指令
             if (post_msg.type === 'chat' || post_msg.type === 'server_cmd') {
+                if (should_skip_wordle_echo(jsonMsg, bot.username)) {
+                    // Wordle 公屏回显：仅在 MC 内展示，不再转发到 Python。
+                    return;
+                }
+
                 const chat_info = extract_chat_info(jsonMsg);
                 if (chat_info && chat_info.sender_name && chat_info.chat_text) {
                     const parsed_chat_command = parse_prefixed_command(chat_info.chat_text);

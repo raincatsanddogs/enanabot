@@ -3,6 +3,12 @@ const { on_command } = require('../../handler/commandManager');
 const fs = require("fs")
 const path = require("path")
 
+const WORDLE_ECHO_PREFIX = '| ';
+
+function wordle_reply(session, text) {
+    session.bot.chat(`${WORDLE_ECHO_PREFIX}${text}`);
+}
+
 //游戏状态全局变量
 let gameActive = false;
 let targetWord = '';
@@ -38,21 +44,21 @@ const guess = on_command('guess', {permission: 'guest',description:'猜wordle词
 guess.handle(async (session) =>
 {
     if (!gameActive) {
-        session.bot.chat('没有正在进行中的wordle,请输入#wordle start开始游戏');
+        wordle_reply(session, '没有正在进行中的wordle,请输入#wordle start开始游戏');
         // No active game
         return;
     }
     const arg = session.args[0];
     if (!arg) {
-        session.bot.chat('干什么？！');
+        wordle_reply(session, '干什么？！');
         return;
     }
     if (arg.length !== 5) {
-        session.bot.chat('请输入一个五字单词');
+        wordle_reply(session, '请输入一个五字单词');
         return;
     }
-    if (!wordle_list_set.has(arg)) {
-        session.bot.chat('单词不在词库中，请输入一个有效的五字单词');
+    if (!guess_list_set.has(arg)) {
+        wordle_reply(session, '单词不在词库中，请输入一个有效的五字单词');
         return;
     }//以上为输入错误判断
 
@@ -92,18 +98,18 @@ guess.handle(async (session) =>
             }
         }
         if (turn_result.length > 0) {
-            session.bot.chat(turn_result);
+            wordle_reply(session, turn_result);
         }
     }
     //输出猜词结果
     const if_guess_correct = arg === targetWord;
     if (if_guess_correct) {
-        session.bot.chat(`恭喜你猜对了！正确单词是${targetWord}`);
+        wordle_reply(session, `恭喜你猜对了！正确单词是${targetWord}`);
         gameActive = false;
         return;
     }
     if (attempts >= maxAttempts) {
-        session.bot.chat(`游戏结束！正确单词是${targetWord}`);
+        wordle_reply(session, `游戏结束！正确单词是${targetWord}`);
         gameActive = false;
         return;
     }
@@ -115,14 +121,14 @@ guess.handle(async (session) =>
 const hint = on_command('hint', {permission: 'guest',description:'获取wordle提示'} );
 hint.handle(async (session) =>
 {   if (!gameActive) {
-        session.bot.chat('没有正在进行中的wordle,请输入#wordle start开始游戏');
+        wordle_reply(session, '没有正在进行中的wordle,请输入#wordle start开始游戏');
         // No active game
     } else if (attempts === 0) {
-        session.bot.chat('你还没有进行过猜词，无法获取提示');
+        wordle_reply(session, '你还没有进行过猜词，无法获取提示');
     }
     else {
         // Provide a hint based on the current game state
-        session.bot.chat('提示功能先鸽着（');
+        wordle_reply(session, '提示功能先鸽着（');
     }
 });
 
@@ -138,21 +144,21 @@ wordle.handle(async (session) =>{
                 gameActive = true;
                 targetWord = guess_list[getRndInteger(0, guess_list.length)];
                 attempts = 0;
-                session.bot.chat('wordle已开始，输入#guess <五字母单词>开始猜词');
+                wordle_reply(session, 'wordle已开始，输入#guess <五字母单词>开始猜词');
             } else {
-                session.bot.chat('已有进行中的wordle，输入#wordle stop可结束当前游戏');
+                wordle_reply(session, '已有进行中的wordle，输入#wordle stop可结束当前游戏');
             }
             break;
         case 'stop':
             if (gameActive) {
                 gameActive = false;
-                session.bot.chat(`已结束当前wordle，答案是${targetWord}`);
+                wordle_reply(session, `已结束当前wordle，答案是${targetWord}`);
             } else {
-                session.bot.chat('当前没有正在进行中的wordle');
+                wordle_reply(session, '当前没有正在进行中的wordle');
             }
             break;
         default:
-            session.bot.chat('用法: #wordle <start|stop>');
+            wordle_reply(session, '用法: #wordle <start|stop>');
             break;
     }
 });
