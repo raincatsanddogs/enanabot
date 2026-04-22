@@ -626,8 +626,11 @@ async def _generate_gantt_chart(
         pad=16,
     )
 
+    all_times = [t for p_sessions in sessions.values() for session in p_sessions for t in session]
+    timestamps = [min(all_times), max(all_times)] if all_times else None
+
     ax.xaxis_date()
-    _auto_format_xaxis(ax, None)
+    _auto_format_xaxis(ax, timestamps)
 
     ax.tick_params(axis="x", colors=TEXT_COLOR, labelsize=9)
     ax.tick_params(axis="y", colors=TEXT_COLOR, labelsize=9)
