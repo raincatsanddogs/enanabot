@@ -23,6 +23,10 @@ let wordle_list = [];
 let wordle_list_set = new Set();
 let guess_list = [];
 let guess_list_set = new Set();
+let wordle_list_difficult = [];
+let wordle_list_difficult_set = new Set();
+let guess_list_difficult = [];
+let guess_list_difficult_set = new Set();
 
 
 const rows = 6;
@@ -75,7 +79,7 @@ guess.handle(async (session) =>
         wordle_reply(session, '请输入一个五字单词');
         return;
     }
-    if (!guess_list_set.has(arg)) {
+    if (!guess_list_set.has(arg) || !wordle_list_set.has(arg) || !guess_list_difficult_set.has(arg) || !wordle_list_difficult_set.has(arg)) {
         wordle_reply(session, '单词不在词库中，请输入一个有效的五字单词');
         return;
     }//以上为输入错误判断
@@ -159,6 +163,11 @@ wordle.handle(async (session) =>{
     switch (args[0]) {
         case 'start':
             if (!gameActive) {
+                if (args[1] === 'dif') {
+                    targetWord = guess_list_difficult[getRndInteger(0, wordle_list_difficult.length)];
+                } else {
+                    targetWord = guess_list[getRndInteger(0, guess_list.length)];
+                }
                 gameActive = true;
                 targetWord = guess_list[getRndInteger(0, guess_list.length)];
                 attempts = 0;
@@ -184,13 +193,21 @@ wordle.handle(async (session) =>{
 
 function read_word_list() {
     // Implementation for reading word list
-    const data1 = fs.readFileSync(path.join(__dirname, 'wordle_list', 'valid-words.txt'), 'utf8');
-    wordle_list = data1.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
+    const wordle_list_file = fs.readFileSync(path.join(__dirname, 'wordle_list', 'valid-words.txt'), 'utf8');
+    wordle_list = wordle_list_file.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
     wordle_list_set = new Set(wordle_list);
 
-    const data2 = fs.readFileSync(path.join(__dirname, 'wordle_list', 'word-bank.txt'), 'utf8');
-    guess_list = data2.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
+    const answer_list_file = fs.readFileSync(path.join(__dirname, 'wordle_list', 'word-bank.txt'), 'utf8');
+    guess_list = answer_list_file.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
     guess_list_set = new Set(guess_list);
+
+    const wordle_list_difficult_file = fs.readFileSync(path.join(__dirname, 'wordle_list', 'words.txt'), 'utf8');
+    wordle_list_difficult = wordle_list_difficult_file.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
+    wordle_list_difficult_set = new Set(wordle_list_difficult);
+
+    const answer_list_difficult_file = fs.readFileSync(path.join(__dirname, 'wordle_list', 'filtered-wordle-words.txt'), 'utf8');
+    guess_list_difficult = answer_list_difficult_file.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
+    guess_list_difficult_set = new Set(guess_list_difficult);
 
     return 0;
 }
