@@ -79,7 +79,7 @@ guess.handle(async (session) =>
         wordle_reply(session, '请输入一个五字单词');
         return;
     }
-    if (!guess_list_set.has(arg) || !wordle_list_set.has(arg) || !guess_list_difficult_set.has(arg) || !wordle_list_difficult_set.has(arg)) {
+    if (!guess_list_set.has(arg) && !wordle_list_set.has(arg) && !guess_list_difficult_set.has(arg) && !wordle_list_difficult_set.has(arg)) {
         wordle_reply(session, '单词不在词库中，请输入一个有效的五字单词');
         return;
     }//以上为输入错误判断
