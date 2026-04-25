@@ -184,11 +184,11 @@ wordle.handle(async (session) =>{
 
 function read_word_list() {
     // Implementation for reading word list
-    const data1 = fs.readFileSync(path.join(__dirname, 'wordle_list', 'filtered-wordle-words.txt'), 'utf8');
+    const data1 = fs.readFileSync(path.join(__dirname, 'wordle_list', 'vaild-words.txt'), 'utf8');
     wordle_list = data1.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
     wordle_list_set = new Set(wordle_list);
 
-    const data2 = fs.readFileSync(path.join(__dirname, 'wordle_list', 'words.txt'), 'utf8');
+    const data2 = fs.readFileSync(path.join(__dirname, 'wordle_list', 'word-bank.txt'), 'utf8');
     guess_list = data2.split('\n').map(word => word.trim().toLowerCase()).filter(word => word.length === 5);
     guess_list_set = new Set(guess_list);
 
