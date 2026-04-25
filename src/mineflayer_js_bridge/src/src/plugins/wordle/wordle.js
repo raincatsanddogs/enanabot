@@ -173,7 +173,7 @@ wordle.handle(async (session) =>{
                 attempts = 0;
                 reset_wordle_status();
                 difficulty = args[1] === 'dif' ? '困难模式' : '普通模式';
-                wordle_reply(session, `{difficulty} wordle已开始，输入#guess <五字母单词>开始猜词`);
+                wordle_reply(session, `${difficulty} wordle已开始，输入#guess <五字母单词>开始猜词`);
             } else {
                 wordle_reply(session, '已有进行中的wordle，输入#wordle stop可结束当前游戏');
             }
