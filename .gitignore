@@ -137,6 +137,8 @@ dmypy.json
 # idle
 .vscode/
 /configs/
+/data/
 .temp/
 session.html
 .copilot-tracking/
+.antigravitycli/
