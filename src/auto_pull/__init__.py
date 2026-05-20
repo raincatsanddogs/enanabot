@@ -48,7 +48,7 @@ sub_plugins = nonebot.load_plugins(
 git = on_command("git", rule=to_me_or_prefix(), aliases={"git"}, priority=5, permission=SUPERUSER)
 
 
-async def _stop_bridge_process_before_restart() -> None:
+async def _close_bridge_connection_before_restart() -> None:
 
     bridge_module = (
         sys.modules.get("mineflayer_js_bridge")
@@ -63,22 +63,22 @@ async def _stop_bridge_process_before_restart() -> None:
     if bridge_module is None:
         return
 
-    stop_func = getattr(bridge_module, "_stop_js_process", None)
-    process = getattr(bridge_module, "js_process", None)
-    if not callable(stop_func) or process is None:
+    close_func = getattr(bridge_module, "_close_ws_connection", None)
+    is_connected_func = getattr(bridge_module, "_is_ws_connected", None)
+    if not callable(close_func) or not callable(is_connected_func):
         return
 
-    if getattr(process, "returncode", None) is not None:
+    if not is_connected_func():
         return
 
     try:
-        stopped, message = await stop_func(persist_state=False)
+        stopped, message = await close_func(persist_state=False)
         if stopped:
-            logger.info("重启前已停止 mineflayer_js_bridge 的 JS 子进程")
+            logger.info("重启前已断开 mineflayer_js_bridge 的 WebSocket 连接")
         else:
-            logger.warning(f"重启前停止 JS 子进程返回: {message}")
+            logger.warning(f"重启前断开 WebSocket 返回: {message}")
     except Exception as error:
-        logger.exception(f"重启前停止 JS 子进程失败: {error}")
+        logger.exception(f"重启前断开 WebSocket 失败: {error}")
 
 @git.handle()
 async def _(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
@@ -136,7 +136,7 @@ async def _(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
 
         await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
         await git.send("正在重启······")
-        await _stop_bridge_process_before_restart()
+        await _close_bridge_connection_before_restart()
         # 执行重启操作
         restart_bot()
     elif not sub_command:

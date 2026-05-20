@@ -1,18 +1,23 @@
+from __future__ import annotations
+
 import asyncio
+import contextlib
 import json
-import os
-import re
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import nonebot
+import websockets
 from nonebot import get_bots, get_driver, get_plugin_config, logger, on_command, on_message
 from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import Bot, Event
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
+from websockets.exceptions import ConnectionClosed
 
 from .config import Config
 
@@ -37,8 +42,8 @@ except ModuleNotFoundError:
 
 __plugin_meta__ = PluginMetadata(
     name="mc",
-    description="MC 服务器连接管理",
-    usage="mc <start|stop|status>",
+    description="MC WebSocket 连接管理",
+    usage="mc <connect|disconnect|logout|status>",
     config=Config,
     extra={"group": "MC"},
 )
@@ -53,286 +58,82 @@ mc = on_command("mc", rule=to_me_or_prefix(), aliases={"minecraft"}, priority=5,
 tpa_cmd = on_command("tpa", rule=to_me_or_prefix(), priority=5, permission=ADMIN)
 home_cmd = on_command("home", rule=to_me_or_prefix(), priority=5, permission=ADMIN)
 bridge_input = on_message(priority=20, block=False)
-JS_START_DELAY_SECONDS = 1
 
-active_bot: Bot | None = None      # 保存当前的 Bot 实例
-active_event: Event | None = None  # 保存触发指令的事件上下文
-
-js_process: asyncio.subprocess.Process | None = None
-js_stop_requested = False
-js_stderr_lines: list[str] = []
-PENDING_BRIDGE_MESSAGES: deque[str] = deque(maxlen=50)
-
-RUNTIME_STATE_PATH = (
-    Path(__file__).resolve().parents[2] / "configs" / "mineflayer_js_bridge.runtime.json"
-)
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+LEGACY_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "configs"
+RUNTIME_STATE_PATH = DATA_DIR / "mineflayer_ws_bridge.runtime.json"
+LEGACY_RUNTIME_STATE_PATH = LEGACY_CONFIGS_DIR / "mineflayer_js_bridge.runtime.json"
 RUNTIME_STATE_DEFAULT: dict[str, bool | str | int | None] = {
-    "should_start": False,
-    "bot_id": None,
+    "should_connect": False,
+    "mc_bot_id": None,
+    "mc_bot_state": None,
+    "onebot_id": None,
     "target_type": None,
     "target_id": None,
+    "account_preset": None,
+    "server_preset": None,
 }
 
-# ===== 委托指令结果等待 =====
-DELEGATE_RESULT_PENDING: dict[str, asyncio.Future] = {}
-
-# ===== 统一 IPC 协议常量 =====
-# Py → JS
-IPC_ACTION_QQ_MESSAGE = "qq_message"
-IPC_ACTION_WHISPER_REPLY = "whisper_reply"
-IPC_ACTION_DELEGATE_COMMAND = "delegate_command"
-# JS → Py
-IPC_ACTION_MC_MESSAGE = "mc_message"
-IPC_ACTION_WHISPER_COMMAND = "whisper_command"
-IPC_ACTION_PLAYER_LIST = "player_list"
-IPC_ACTION_TPA_NOTIFICATION = "tpa_notification"
-IPC_ACTION_TPA_REQUEST_DETECTED = "tpa_request_detected"
-IPC_ACTION_DELEGATE_RESULT = "delegate_result"
+active_bot: Bot | None = None
+active_event: Event | None = None
+ws_connection: Any | None = None
+ws_reader_task: asyncio.Task[None] | None = None
+player_poll_task: asyncio.Task[None] | None = None
+authenticated = False
+current_bot_id: str | None = None
+current_bot_state = "offline"
+pending_replies: dict[str, asyncio.Future[dict[str, Any]]] = {}
+connection_lock = asyncio.Lock()
+pending_bridge_messages: deque[str] = deque(maxlen=50)
 
 
-def _ipc_encode(action: str, data: dict[str, object]) -> str:
-    """编码一条统一 IPC 消息为 JSON 行。"""
-    envelope = {
-        "action": action,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "data": data,
-    }
-    return json.dumps(envelope, ensure_ascii=False) + "\n"
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
-def _ipc_decode(line: str) -> dict[str, object] | None:
-    """解码一行 JSON 为 IPC envelope，返回 None 表示不是有效 IPC 消息。"""
-    trimmed = line.strip()
-    if not trimmed:
-        return None
-
-    try:
-        parsed = json.loads(trimmed)
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(parsed, dict):
-        return None
-    if "action" not in parsed:
-        return None
-
-    return {
-        "action": parsed["action"],
-        "timestamp": parsed.get("timestamp", ""),
-        "data": parsed.get("data", {}),
-    }
+def _new_msg_id(kind: str) -> str:
+    return f"msg_{_now_ms()}_{kind}_{uuid4().hex[:4]}"
 
 
-# ===== 指令权限定义 =====
-# admin+: 可执行所有指令
-# user: 仅可执行此白名单中的指令
-USER_ALLOWED_COMMANDS: set[str] = {"mc status", "tpa status", "tpa back", "home list"}
+def _ws_url() -> str:
+    return f"ws://{config.mineflayer_ws_host}:{config.mineflayer_ws_port}"
 
 
-# ===== 统一指令调度器 =====
-async def dispatch_command(
-    command: str,
-    args: list[str],
-    permission_level: str | PermissionLevel,
-    player_name: str | None = None,
-) -> str:
-    """
-    统一指令入口。QQ 群指令和 MC whisper 指令共用此函数。
+def _is_ws_connected() -> bool:
+    return ws_connection is not None
 
-    返回值为指令执行结果的文本。
-    """
-    # 标准化为 PermissionLevel 枚举
-    if isinstance(permission_level, str):
-        try:
-            level = PermissionLevel(permission_level)
-        except ValueError:
-            level = PermissionLevel.USER
-    else:
-        level = permission_level
-
-    full_command = command
-    if args:
-        full_command = f"{command} {' '.join(args)}"
-
-    # 权限检查
-    if level < PermissionLevel.ADMIN and full_command not in USER_ALLOWED_COMMANDS:
-        return f"权限不足：{full_command}"
-
-    # mc 指令
-    if command == "mc":
-        return await _dispatch_mc_command(args)
-
-    # tpa 指令 → 委托 JS
-    if command == "tpa":
-        return await _delegate_to_js(command, args, level)
-
-    # home 指令 → 委托 JS
-    if command == "home":
-        return await _delegate_to_js(command, args, level)
-
-    # git 指令
-    if command == "git":
-        return await _dispatch_git_command(args)
-
-    return f"未知指令：{command}"
-
-
-async def _dispatch_mc_command(args: list[str]) -> str:
-    """处理 mc 子指令。"""
-    if not args:
-        return "干什么?!"
-
-    sub = args[0]
-
-    if sub == "start":
-        _, message = await _start_js_process(persist_state=True)
-        return message
-
-    if sub == "stop":
-        _, message = await _stop_js_process(persist_state=True)
-        return message
-
-    if sub == "status":
-        state = _load_runtime_state()
-        running = js_process is not None and js_process.returncode is None
-        running_text = "运行中" if running else "未运行"
-        should_start_text = "开启" if state.get("should_start") else "关闭"
-        bot_text = str(state.get("bot_id") or "未设置")
-        target_text = _format_target(state)
-        pending_text = str(len(PENDING_BRIDGE_MESSAGES))
-
-        return (
-            "MC Bridge 状态：\n"
-            f"- JS 进程: {running_text}\n"
-            f"- 重启后自动恢复: {should_start_text}\n"
-            f"- 推送 Bot: {bot_text}\n"
-            f"- 推送目标: {target_text}\n"
-            f"- 待补发消息: {pending_text}"
-        )
-
-    return "干什么?!"
-
-
-async def _dispatch_git_command(args: list[str]) -> str:
-    """处理 git 子指令。复用 auto_pull 的核心逻辑。"""
-    if not args:
-        return "你说得对，但是git是一款由Linus Torvalds开发的......"
-
-    sub = args[0]
-
-    if sub == "pull":
-        return await _execute_git_pull()
-
-    return "干什么?!"
-
-
-async def _execute_git_pull() -> str:
-    """执行 git pull 并返回格式化结果。当从 whisper 调用时不触发重启。"""
-    import sys
-
-    process = await asyncio.create_subprocess_shell(
-        (
-            'git -c '
-            'url."https://gh-proxy.org/https://github.com/".insteadOf='
-            '"https://github.com/" pull'
-        ),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    stdout, stderr = await process.communicate()
-
-    output = stdout.decode().strip() if stdout else ""
-    err_output = stderr.decode().strip() if stderr else ""
-
-    if process.returncode != 0:
-        return f"更新失败 (错误码 {process.returncode})：\n{err_output}"
-
-    # 获取 commit 日志
-    git_log_process = await asyncio.create_subprocess_shell(
-        'git log ORIG_HEAD..HEAD --pretty=format:"%h - %an : %s (%cr)"',
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    log_stdout, _ = await git_log_process.communicate()
-    log_text = log_stdout.decode().strip() if log_stdout else ""
-
-    result_parts = [output]
-    if log_text:
-        result_parts.append(log_text)
-
-    return "\n".join(result_parts)
-
-
-# ===== 委托 JS 执行指令 =====
-
-async def _delegate_to_js(
-    command: str,
-    args: list[str],
-    level: PermissionLevel,
-    timeout: float = 15.0,
-) -> str:
-    """将指令委托给 JS 端执行并等待结果。"""
-    global js_process
-
-    if js_process is None or js_process.returncode is not None:
-        return "JS 进程未运行，无法执行指令"
-
-    reply_to = f"delegate-{command}-{uuid4().hex[:12]}"
-
-    # 映射权限
-    permission_str = "admin" if level >= PermissionLevel.ADMIN else "user"
-
-    # 创建 Future 等待结果
-    future: asyncio.Future = asyncio.get_running_loop().create_future()
-    DELEGATE_RESULT_PENDING[reply_to] = future
-
-    try:
-        encoded = _ipc_encode(IPC_ACTION_DELEGATE_COMMAND, {
-            "command": command,
-            "args": args,
-            "reply_to": reply_to,
-            "permission": permission_str,
-        })
-
-        js_process.stdin.write(encoded.encode("utf-8"))
-        await js_process.stdin.drain()
-
-        # 等待 JS 返回结果
-        result = await asyncio.wait_for(future, timeout=timeout)
-        return result.get("result", "（无返回结果）")
-    except asyncio.TimeoutError:
-        return "指令执行超时"
-    except Exception as e:
-        return f"指令执行失败：{e}"
-    finally:
-        DELEGATE_RESULT_PENDING.pop(reply_to, None)
-
-
-# ===== 持久化状态管理 =====
 
 def _load_runtime_state() -> dict[str, bool | str | int | None]:
     state: dict[str, bool | str | int | None] = dict(RUNTIME_STATE_DEFAULT)
-    if not RUNTIME_STATE_PATH.exists():
+    path = RUNTIME_STATE_PATH if RUNTIME_STATE_PATH.exists() else LEGACY_RUNTIME_STATE_PATH
+    if not path.exists():
         return state
 
     try:
-        loaded = json.loads(RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except Exception as error:
-        logger.warning(f"读取持久化状态失败，使用默认状态: {error}")
+        logger.warning(f"读取 WebSocket 桥接状态失败，使用默认状态: {error}")
         return state
 
     if not isinstance(loaded, dict):
-        logger.warning("持久化状态格式无效，使用默认状态")
+        logger.warning("WebSocket 桥接状态格式无效，使用默认状态")
         return state
 
-    should_start = loaded.get("should_start")
-    if isinstance(should_start, bool):
-        state["should_start"] = should_start
+    state["should_connect"] = bool(
+        loaded.get("should_connect", loaded.get("should_start", False))
+    )
 
-    bot_id = loaded.get("bot_id")
-    if isinstance(bot_id, str) and bot_id:
-        state["bot_id"] = bot_id
+    mc_bot_id = loaded.get("mc_bot_id") or loaded.get("bot_id")
+    if isinstance(mc_bot_id, str) and mc_bot_id:
+        state["mc_bot_id"] = mc_bot_id
+
+    mc_bot_state = loaded.get("mc_bot_state")
+    if isinstance(mc_bot_state, str) and mc_bot_state:
+        state["mc_bot_state"] = mc_bot_state
+
+    onebot_id = loaded.get("onebot_id")
+    if isinstance(onebot_id, str) and onebot_id:
+        state["onebot_id"] = onebot_id
 
     target_type = loaded.get("target_type")
     if target_type in {"group", "private"}:
@@ -344,34 +145,51 @@ def _load_runtime_state() -> dict[str, bool | str | int | None]:
     elif isinstance(target_id, str) and target_id.isdigit():
         state["target_id"] = int(target_id)
 
+    for key in ("account_preset", "server_preset"):
+        value = loaded.get(key)
+        if isinstance(value, int) and value > 0:
+            state[key] = value
+        elif isinstance(value, str) and value.isdigit():
+            state[key] = int(value)
+
+    if path == LEGACY_RUNTIME_STATE_PATH:
+        _save_runtime_state(**state)
+
     return state
 
 
 def _save_runtime_state(
     *,
-    should_start: bool,
-    target: dict[str, str | int] | None = None,
+    should_connect: bool,
+    mc_bot_id: str | None = None,
+    mc_bot_state: str | None = None,
+    onebot_id: str | None = None,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    account_preset: int | None = None,
+    server_preset: int | None = None,
+    clear_current_bot: bool = False,
 ) -> None:
+    previous = _load_runtime_state() if RUNTIME_STATE_PATH.exists() else dict(RUNTIME_STATE_DEFAULT)
     payload: dict[str, bool | str | int | None] = {
-        "should_start": should_start,
-        "bot_id": None,
-        "target_type": None,
-        "target_id": None,
+        "should_connect": should_connect,
+        "mc_bot_id": None
+        if clear_current_bot
+        else mc_bot_id
+        if mc_bot_id is not None
+        else previous.get("mc_bot_id"),
+        "mc_bot_state": mc_bot_state if mc_bot_state is not None else previous.get("mc_bot_state"),
+        "onebot_id": onebot_id if onebot_id is not None else previous.get("onebot_id"),
+        "target_type": target_type if target_type is not None else previous.get("target_type"),
+        "target_id": target_id if target_id is not None else previous.get("target_id"),
+        "account_preset": account_preset
+        if account_preset is not None
+        else previous.get("account_preset"),
+        "server_preset": server_preset
+        if server_preset is not None
+        else previous.get("server_preset"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-
-    # 启动但未提供新上下文时，保留上次的目标，以便重启后继续转发。
-    if should_start and target is None:
-        previous = _load_runtime_state()
-        payload["bot_id"] = previous.get("bot_id")
-        payload["target_type"] = previous.get("target_type")
-        payload["target_id"] = previous.get("target_id")
-
-    if target:
-        payload["bot_id"] = str(target.get("bot_id"))
-        payload["target_type"] = str(target.get("target_type"))
-        target_id = target.get("target_id")
-        payload["target_id"] = int(target_id) if target_id is not None else None
 
     try:
         RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -380,14 +198,14 @@ def _save_runtime_state(
             encoding="utf-8",
         )
     except Exception as error:
-        logger.error(f"写入持久化状态失败: {error}")
+        logger.error(f"写入 WebSocket 桥接状态失败: {error}")
 
 
 def _extract_target_from_event(bot: Bot, event: Event) -> dict[str, str | int] | None:
     group_id = getattr(event, "group_id", None)
     if isinstance(group_id, int):
         return {
-            "bot_id": str(bot.self_id),
+            "onebot_id": str(bot.self_id),
             "target_type": "group",
             "target_id": group_id,
         }
@@ -395,7 +213,7 @@ def _extract_target_from_event(bot: Bot, event: Event) -> dict[str, str | int] |
     user_id = getattr(event, "user_id", None)
     if isinstance(user_id, int):
         return {
-            "bot_id": str(bot.self_id),
+            "onebot_id": str(bot.self_id),
             "target_type": "private",
             "target_id": user_id,
         }
@@ -406,7 +224,6 @@ def _extract_target_from_event(bot: Bot, event: Event) -> dict[str, str | int] |
 def _format_target(state: dict[str, bool | str | int | None]) -> str:
     target_type = state.get("target_type")
     target_id = state.get("target_id")
-
     if target_type == "group" and isinstance(target_id, int):
         return f"群聊 {target_id}"
     if target_type == "private" and isinstance(target_id, int):
@@ -415,35 +232,28 @@ def _format_target(state: dict[str, bool | str | int | None]) -> str:
 
 
 def _event_matches_runtime_target(bot: Bot, event: Event) -> bool:
-    # 优先使用内存中的活跃上下文，避免每条消息都读取磁盘状态文件。
     if active_bot and active_event:
         if str(bot.self_id) != str(active_bot.self_id):
             return False
         active_target = _extract_target_from_event(active_bot, active_event)
         if active_target:
-            target_type = active_target.get("target_type")
-            target_id = active_target.get("target_id")
-            group_id = getattr(event, "group_id", None)
-            user_id = getattr(event, "user_id", None)
-
-            if target_type == "group":
-                return isinstance(group_id, int) and group_id == target_id
-            if target_type == "private":
-                return (not isinstance(group_id, int)) and isinstance(user_id, int) and user_id == target_id
+            return _event_matches_target(event, active_target)
 
     state = _load_runtime_state()
-    bot_id = state.get("bot_id")
-    target_type = state.get("target_type")
-    target_id = state.get("target_id")
-
-    if isinstance(bot_id, str) and bot_id and str(bot.self_id) != bot_id:
+    onebot_id = state.get("onebot_id")
+    if isinstance(onebot_id, str) and onebot_id and str(bot.self_id) != onebot_id:
         return False
+    return _event_matches_target(event, state)
+
+
+def _event_matches_target(event: Event, target: dict[str, Any]) -> bool:
+    target_type = target.get("target_type")
+    target_id = target.get("target_id")
     if not isinstance(target_id, int):
         return False
 
     group_id = getattr(event, "group_id", None)
     user_id = getattr(event, "user_id", None)
-
     if target_type == "group":
         return isinstance(group_id, int) and group_id == target_id
     if target_type == "private":
@@ -451,34 +261,480 @@ def _event_matches_runtime_target(bot: Bot, event: Event) -> bool:
     return False
 
 
-# ===== IPC 通信 =====
+def _message_result_text(result: Any) -> str:
+    if result is None:
+        return "（无返回结果）"
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        for key in ("reply", "message", "text", "state"):
+            value = result.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return json.dumps(result, ensure_ascii=False)
+    return str(result)
 
-async def _write_ipc_to_js(action: str, data: dict[str, object]) -> bool:
-    """通过统一 IPC 格式向 JS 进程发送消息。"""
-    process = js_process
-    if process is None or process.returncode is not None:
-        return False
 
-    if process.stdin is None:
-        logger.warning("JS stdin 不可用，无法写入 IPC 消息")
-        return False
+async def _send_payload(payload: dict[str, Any]) -> None:
+    if ws_connection is None:
+        msg = "WebSocket 未连接"
+        raise RuntimeError(msg)
+    await ws_connection.send(json.dumps(payload, ensure_ascii=False))
+
+
+async def _send_request(
+    message_type: str,
+    data: dict[str, Any] | None = None,
+    *,
+    bot_id: str | None = None,
+    extra: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    msg_id = _new_msg_id(message_type)
+    payload: dict[str, Any] = {
+        "type": message_type,
+        "timestamp": _now_ms(),
+        "need_reply": True,
+        "msg_id": msg_id,
+        "data": data or {},
+        "extra": extra or {},
+    }
+    if bot_id:
+        payload["bot_id"] = bot_id
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[dict[str, Any]] = loop.create_future()
+    pending_replies[msg_id] = future
+    try:
+        await _send_payload(payload)
+        reply = await asyncio.wait_for(
+            future,
+            timeout=timeout or config.mineflayer_ws_request_timeout,
+        )
+    finally:
+        pending_replies.pop(msg_id, None)
+
+    reply_data = reply.get("data", {})
+    if not isinstance(reply_data, dict):
+        msg = "WebSocket 回复格式无效"
+        raise RuntimeError(msg)
+
+    status = reply_data.get("status")
+    result = reply_data.get("result")
+    if status == "error":
+        if isinstance(result, dict):
+            error_message = result.get("error_message") or result.get("error_type")
+            raise RuntimeError(str(error_message or result))
+        raise RuntimeError(str(result or "请求失败"))
+    return reply
+
+
+async def _send_reply(msg_id: str, result: Any = None, *, status: str = "success") -> None:
+    payload = {
+        "type": "reply",
+        "timestamp": _now_ms(),
+        "need_reply": False,
+        "data": {
+            "msg_id": msg_id,
+            "status": status,
+            "result": result,
+        },
+    }
+    await _send_payload(payload)
+
+
+async def _authenticate() -> None:
+    global authenticated
+    reply = await _send_request("auth", {"token": config.mineflayer_ws_token})
+    result = reply.get("data", {}).get("result")
+    authenticated = bool(result.get("authenticated")) if isinstance(result, dict) else True
+
+
+async def _select_or_login_bot(account_preset: int, server_preset: int) -> str:
+    state = _load_runtime_state()
+    saved_bot_id = state.get("mc_bot_id")
+    if isinstance(saved_bot_id, str) and saved_bot_id:
+        try:
+            reply = await _send_request("bot_info", bot_id=saved_bot_id)
+            result = reply.get("data", {}).get("result", {})
+            if isinstance(result, dict):
+                _set_current_bot(saved_bot_id, str(result.get("state") or "unknown"))
+                return saved_bot_id
+        except Exception as error:
+            logger.info(f"恢复已有 MC bot 失败，将尝试列表/登录: {error}")
 
     try:
-        line = _ipc_encode(action, data)
-        process.stdin.write(line.encode("utf-8"))
-        await process.stdin.drain()
-        return True
+        reply = await _send_request("bot_list")
+        result = reply.get("data", {}).get("result", {})
+        bots = result.get("bots", []) if isinstance(result, dict) else []
+        if isinstance(bots, list) and bots:
+            first_bot = next((bot for bot in bots if isinstance(bot, dict)), None)
+            if first_bot:
+                bot_id = str(first_bot.get("bot_id") or "")
+                if bot_id:
+                    _set_current_bot(bot_id, str(first_bot.get("state") or "unknown"))
+                    return bot_id
     except Exception as error:
-        logger.error(f"写入 JS stdin 失败: {error}")
-        return False
+        logger.info(f"查询 MC bot 列表失败，将尝试登录: {error}")
+
+    reply = await _send_request(
+        "login_preset",
+        {"account": account_preset, "server": server_preset},
+        timeout=max(config.mineflayer_ws_request_timeout, 60),
+    )
+    result = reply.get("data", {}).get("result", {})
+    if not isinstance(result, dict) or not result.get("bot_id"):
+        msg = "login_preset 成功但未返回 bot_id"
+        raise RuntimeError(msg)
+
+    bot_id = str(result["bot_id"])
+    _set_current_bot(bot_id, str(result.get("state") or "online"))
+    return bot_id
 
 
-async def _send_whisper_reply(player_name: str, message: str) -> bool:
-    """通过 IPC 向 JS 发送 whisper 回复。"""
-    return await _write_ipc_to_js(IPC_ACTION_WHISPER_REPLY, {
-        "target_player": player_name,
-        "msg": message,
-    })
+def _set_current_bot(bot_id: str | None, state: str | None = None) -> None:
+    global current_bot_id, current_bot_state
+    current_bot_id = bot_id
+    if state:
+        current_bot_state = state
+
+
+async def _connect_ws(
+    *,
+    bot: Bot | None = None,
+    event: Event | None = None,
+    account_preset: int | None = None,
+    server_preset: int | None = None,
+    persist_state: bool = True,
+) -> tuple[bool, str]:
+    global active_bot, active_event, authenticated, player_poll_task
+    global ws_connection, ws_reader_task
+
+    async with connection_lock:
+        if bot and event:
+            active_bot = bot
+            active_event = event
+
+        account = account_preset or config.mineflayer_ws_account_preset
+        server = server_preset or config.mineflayer_ws_server_preset
+
+        if _is_ws_connected():
+            if persist_state:
+                _persist_connection_state(
+                    should_connect=True,
+                    bot=bot,
+                    event=event,
+                    account_preset=account,
+                    server_preset=server,
+                )
+            return False, "WebSocket 已连接，已更新消息推送目标"
+
+        try:
+            ws_connection = await websockets.connect(
+                _ws_url(),
+                open_timeout=config.mineflayer_ws_request_timeout,
+                close_timeout=5,
+            )
+            ws_reader_task = asyncio.create_task(
+                _read_ws_messages(),
+                name="mineflayer-ws-reader",
+            )
+            await _authenticate()
+            bot_id = await _select_or_login_bot(account, server)
+        except Exception as error:
+            await _close_ws_connection(persist_state=False)
+            logger.error(f"连接 Mineflayer WebSocket 失败: {error}")
+            return False, f"连接失败：{error}"
+
+        if player_poll_task is None or player_poll_task.done():
+            player_poll_task = asyncio.create_task(
+                _poll_players_loop(),
+                name="mineflayer-player-poller",
+            )
+
+        if persist_state:
+            _persist_connection_state(
+                should_connect=True,
+                bot=bot,
+                event=event,
+                account_preset=account,
+                server_preset=server,
+            )
+
+        await _flush_pending_bridge_messages()
+        return True, f"已连接 WebSocket，并绑定 MC bot: {bot_id}"
+
+
+def _persist_connection_state(
+    *,
+    should_connect: bool,
+    bot: Bot | None = None,
+    event: Event | None = None,
+    account_preset: int | None = None,
+    server_preset: int | None = None,
+) -> None:
+    target = _extract_target_from_event(bot, event) if bot and event else {}
+    _save_runtime_state(
+        should_connect=should_connect,
+        mc_bot_id=current_bot_id,
+        mc_bot_state=current_bot_state,
+        onebot_id=str(target.get("onebot_id")) if target else None,
+        target_type=str(target.get("target_type")) if target else None,
+        target_id=int(target["target_id"]) if target and target.get("target_id") else None,
+        account_preset=account_preset,
+        server_preset=server_preset,
+    )
+
+
+async def _close_ws_connection(*, persist_state: bool = True) -> tuple[bool, str]:
+    global authenticated, ws_connection, ws_reader_task, player_poll_task
+
+    current_task = asyncio.current_task()
+    connection = ws_connection
+    was_connected = connection is not None
+    ws_connection = None
+    authenticated = False
+
+    if player_poll_task is not None:
+        player_poll_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await player_poll_task
+        player_poll_task = None
+
+    if ws_reader_task is not None and ws_reader_task is not current_task:
+        ws_reader_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ws_reader_task
+        ws_reader_task = None
+    elif ws_reader_task is current_task:
+        ws_reader_task = None
+
+    if connection is not None:
+        with contextlib.suppress(Exception):
+            await connection.close()
+
+    for future in pending_replies.values():
+        if not future.done():
+            future.set_exception(RuntimeError("WebSocket 连接已关闭"))
+    pending_replies.clear()
+
+    if persist_state:
+        _save_runtime_state(should_connect=False, mc_bot_id=current_bot_id, mc_bot_state=current_bot_state)
+
+    return was_connected, "已断开 WebSocket 连接" if was_connected else "WebSocket 未连接"
+
+
+async def _logout_current_bot() -> tuple[bool, str]:
+    global current_bot_id, current_bot_state
+    if not _is_ws_connected():
+        return False, "WebSocket 未连接"
+    if not current_bot_id:
+        return False, "当前未绑定 MC bot"
+
+    try:
+        await _send_request("logout", bot_id=current_bot_id)
+    except Exception as error:
+        return False, f"logout 失败：{error}"
+
+    old_bot_id = current_bot_id
+    current_bot_id = None
+    current_bot_state = "stopped"
+    _save_runtime_state(
+        should_connect=False,
+        mc_bot_state=current_bot_state,
+        clear_current_bot=True,
+    )
+    return True, f"已退出 MC bot: {old_bot_id}"
+
+
+async def _read_ws_messages() -> None:
+    global current_bot_state
+
+    try:
+        while ws_connection is not None:
+            raw_message = await ws_connection.recv()
+            try:
+                message = json.loads(raw_message)
+            except json.JSONDecodeError:
+                logger.warning(f"收到非 JSON WebSocket 消息: {raw_message}")
+                continue
+
+            if not isinstance(message, dict):
+                logger.warning(f"收到无效 WebSocket 消息: {message}")
+                continue
+
+            await _handle_ws_message(message)
+    except asyncio.CancelledError:
+        raise
+    except ConnectionClosed as error:
+        logger.warning(f"Mineflayer WebSocket 连接关闭: {error}")
+    except Exception as error:
+        logger.exception(f"Mineflayer WebSocket 读取失败: {error}")
+    finally:
+        if ws_connection is not None:
+            current_bot_state = "offline"
+            await _close_ws_connection(persist_state=False)
+
+
+async def _handle_ws_message(message: dict[str, Any]) -> None:
+    message_type = message.get("type")
+
+    if message_type == "reply":
+        data = message.get("data", {})
+        msg_id = data.get("msg_id") if isinstance(data, dict) else None
+        if isinstance(msg_id, str):
+            future = pending_replies.get(msg_id)
+            if future is not None and not future.done():
+                future.set_result(message)
+                return
+        logger.debug(f"收到未匹配的 WebSocket reply: {message}")
+        return
+
+    if message_type == "msg":
+        await _handle_mc_message(message)
+        return
+
+    if message_type == "event":
+        await _handle_server_event(message)
+        return
+
+    if message_type == "command":
+        await _handle_server_command(message)
+        return
+
+    if message_type == "error":
+        await _handle_server_error(message)
+        return
+
+    logger.warning(f"收到未知 WebSocket type: {message_type}")
+
+
+async def _handle_mc_message(message: dict[str, Any]) -> None:
+    data = message.get("data", {})
+    if not isinstance(data, dict):
+        return
+
+    if data.get("position") == "private_outgoing":
+        return
+
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return
+
+    await _send_bridge_message(f"{config.mineflayer_ws_mc_prefix}{text}")
+
+
+async def _handle_server_event(message: dict[str, Any]) -> None:
+    data = message.get("data", {})
+    if not isinstance(data, dict):
+        return
+
+    event_type = data.get("event_type")
+    event_data = data.get("event_data", {})
+    if event_type == "bot.status" and isinstance(event_data, dict):
+        state = event_data.get("state")
+        if isinstance(state, str):
+            _set_current_bot(message.get("bot_id") or current_bot_id, state)
+            _save_runtime_state(
+                should_connect=True,
+                mc_bot_id=current_bot_id,
+                mc_bot_state=current_bot_state,
+            )
+    elif event_type in {"tpa.notification", "system.notice"} and isinstance(event_data, dict):
+        notice = event_data.get("message")
+        if isinstance(notice, str) and notice:
+            await _send_bridge_message(f"{config.mineflayer_ws_mc_prefix}{notice}")
+    elif event_type == "tpa.request_detected":
+        logger.info(f"TPA request detected: {event_data}")
+    else:
+        logger.debug(f"收到服务端事件: {event_type} {event_data}")
+
+
+async def _handle_server_command(message: dict[str, Any]) -> None:
+    data = message.get("data", {})
+    msg_id = message.get("msg_id")
+    if not isinstance(data, dict) or not isinstance(msg_id, str):
+        return
+
+    command = data.get("command")
+    args = data.get("args", [])
+    if not isinstance(command, str):
+        await _send_reply(msg_id, {"error_type": "invalid_message"}, status="error")
+        return
+    if not isinstance(args, list):
+        args = []
+
+    try:
+        result = await dispatch_command(command, [str(arg) for arg in args], PermissionLevel.ADMIN)
+    except Exception as error:
+        await _send_reply(
+            msg_id,
+            {"error_type": "command_failed", "error_message": str(error)},
+            status="error",
+        )
+        return
+
+    await _send_reply(msg_id, {"command": command, "reply": result})
+
+
+async def _handle_server_error(message: dict[str, Any]) -> None:
+    data = message.get("data", {})
+    if isinstance(data, dict):
+        logger.error(
+            "Mineflayer WebSocket error: %s %s",
+            data.get("error_type", "unknown"),
+            data.get("error_message", ""),
+        )
+    else:
+        logger.error(f"Mineflayer WebSocket error: {message}")
+
+
+async def _poll_players_loop() -> None:
+    while True:
+        await asyncio.sleep(max(config.mineflayer_ws_player_poll_interval, 1))
+        if not _is_ws_connected() or not current_bot_id:
+            continue
+        try:
+            reply = await _send_request("player", bot_id=current_bot_id)
+            await _record_player_reply(reply)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning(f"轮询在线玩家失败: {error}")
+
+
+async def _record_player_reply(reply: dict[str, Any]) -> None:
+    from .player_tracker import record_snapshot
+
+    result = reply.get("data", {}).get("result", {})
+    if not isinstance(result, dict):
+        return
+
+    raw_players = result.get("player", [])
+    if not isinstance(raw_players, list):
+        return
+
+    players: list[dict[str, str]] = []
+    for raw_player in raw_players:
+        if not isinstance(raw_player, dict):
+            continue
+        username = raw_player.get("username")
+        if not isinstance(username, str) or not username:
+            continue
+        players.append(
+            {
+                "name": username,
+                "uuid": str(raw_player.get("uuid") or ""),
+                "skin_url": str(raw_player.get("skin_url") or ""),
+            }
+        )
+
+    bot_username = result.get("bot_username")
+    record_snapshot(
+        players,
+        datetime.now(timezone.utc).isoformat(),
+        bot_username=str(bot_username or ""),
+    )
 
 
 async def _send_bridge_message(message: str) -> None:
@@ -489,10 +745,8 @@ async def _send_bridge_message(message: str) -> None:
     if delivered:
         return
 
-    PENDING_BRIDGE_MESSAGES.append(message)
-    logger.warning(
-        "桥接消息暂存：OneBot 尚未就绪或目标不可用，等待连接恢复后补发"
-    )
+    pending_bridge_messages.append(message)
+    logger.warning("桥接消息暂存：OneBot 尚未就绪或目标不可用，等待连接恢复后补发")
 
 
 async def _try_send_bridge_message(message: str) -> bool:
@@ -507,16 +761,16 @@ async def _try_send_bridge_message(message: str) -> bool:
             logger.error(f"通过事件上下文发送消息失败: {error}")
 
     state = _load_runtime_state()
-    bot_id = state.get("bot_id")
+    onebot_id = state.get("onebot_id")
     target_type = state.get("target_type")
     target_id = state.get("target_id")
 
-    if not isinstance(bot_id, str) or target_type not in {"group", "private"}:
+    if not isinstance(onebot_id, str) or target_type not in {"group", "private"}:
         return False
     if not isinstance(target_id, int):
         return False
 
-    bot_instance = get_bots().get(bot_id)
+    bot_instance = get_bots().get(onebot_id)
     if bot_instance is None:
         return False
 
@@ -532,11 +786,11 @@ async def _try_send_bridge_message(message: str) -> bool:
 
 
 async def _flush_pending_bridge_messages() -> None:
-    if not PENDING_BRIDGE_MESSAGES:
+    if not pending_bridge_messages:
         return
 
-    pending = list(PENDING_BRIDGE_MESSAGES)
-    PENDING_BRIDGE_MESSAGES.clear()
+    pending = list(pending_bridge_messages)
+    pending_bridge_messages.clear()
     sent_count = 0
 
     for index, pending_message in enumerate(pending):
@@ -546,108 +800,179 @@ async def _flush_pending_bridge_messages() -> None:
             continue
 
         for remaining_message in pending[index:]:
-            PENDING_BRIDGE_MESSAGES.append(remaining_message)
+            pending_bridge_messages.append(remaining_message)
         break
 
     if sent_count > 0:
         logger.info(f"已补发桥接消息 {sent_count} 条")
 
 
-# ===== JS 进程管理 =====
+async def dispatch_command(
+    command: str,
+    args: list[str],
+    permission_level: str | PermissionLevel,
+    player_name: str | None = None,
+) -> str:
+    if isinstance(permission_level, str):
+        try:
+            level = PermissionLevel(permission_level)
+        except ValueError:
+            level = PermissionLevel.USER
+    else:
+        level = permission_level
 
-async def _start_js_process(
-    bot: Bot | None = None,
-    event: Event | None = None,
+    full_command = command if not args else f"{command} {' '.join(args)}"
+    if level < PermissionLevel.ADMIN and full_command not in {"mc status"}:
+        return f"权限不足：{full_command}"
+
+    if command == "mc":
+        return await _dispatch_mc_command(args)
+    if command in {"tpa", "home"}:
+        return await _delegate_to_ws(command, args, level, player_name=player_name)
+    if command == "git":
+        return await _dispatch_git_command(args)
+    return f"未知指令：{command}"
+
+
+async def _dispatch_mc_command(args: list[str]) -> str:
+    if not args:
+        return "用法: mc <connect|disconnect|logout|status>"
+
+    sub = args[0]
+    if sub == "connect":
+        account = _parse_positive_int(args[1]) if len(args) > 1 else None
+        server = _parse_positive_int(args[2]) if len(args) > 2 else None
+        _, message = await _connect_ws(account_preset=account, server_preset=server)
+        return message
+
+    if sub == "disconnect":
+        _, message = await _close_ws_connection(persist_state=True)
+        return message
+
+    if sub == "logout":
+        _, message = await _logout_current_bot()
+        return message
+
+    if sub == "status":
+        return _format_status()
+
+    return "用法: mc <connect|disconnect|logout|status>"
+
+
+def _parse_positive_int(value: str) -> int | None:
+    if not value.isdigit():
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None
+
+
+def _format_status() -> str:
+    state = _load_runtime_state()
+    ws_text = "已连接" if _is_ws_connected() else "未连接"
+    auth_text = "已认证" if authenticated else "未认证"
+    bot_text = current_bot_id or state.get("mc_bot_id") or "未绑定"
+    bot_state = current_bot_state or state.get("mc_bot_state") or "unknown"
+    target_text = _format_target(state)
+    pending_text = str(len(pending_bridge_messages))
+    poller_text = (
+        "运行中"
+        if player_poll_task is not None and not player_poll_task.done()
+        else "未运行"
+    )
+
+    return (
+        "MC WebSocket 状态：\n"
+        f"- 连接: {ws_text}\n"
+        f"- 认证: {auth_text}\n"
+        f"- MC Bot: {bot_text}\n"
+        f"- MC 状态: {bot_state}\n"
+        f"- 推送目标: {target_text}\n"
+        f"- 玩家轮询: {poller_text}\n"
+        f"- 待补发消息: {pending_text}"
+    )
+
+
+async def _dispatch_git_command(args: list[str]) -> str:
+    if not args:
+        return "你说得对，但是git是一款由Linus Torvalds开发的......"
+    if args[0] == "pull":
+        return await _execute_git_pull()
+    return "干什么?!"
+
+
+async def _execute_git_pull() -> str:
+    process = await asyncio.create_subprocess_shell(
+        (
+            'git -c '
+            'url."https://gh-proxy.org/https://github.com/".insteadOf='
+            '"https://github.com/" pull'
+        ),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+
+    output = stdout.decode().strip() if stdout else ""
+    err_output = stderr.decode().strip() if stderr else ""
+    if process.returncode != 0:
+        return f"更新失败 (错误码 {process.returncode})：\n{err_output}"
+
+    git_log_process = await asyncio.create_subprocess_shell(
+        'git log ORIG_HEAD..HEAD --pretty=format:"%h - %an : %s (%cr)"',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    log_stdout, _ = await git_log_process.communicate()
+    log_text = log_stdout.decode().strip() if log_stdout else ""
+
+    result_parts = [output]
+    if log_text:
+        result_parts.append(log_text)
+    return "\n".join(result_parts)
+
+
+async def _delegate_to_ws(
+    command: str,
+    args: list[str],
+    level: PermissionLevel,
     *,
-    persist_state: bool = True,
-) -> tuple[bool, str]:
-    global active_bot, active_event, js_process, js_stderr_lines, js_stop_requested
+    player_name: str | None = None,
+) -> str:
+    if not _is_ws_connected():
+        return "WebSocket 未连接，无法执行指令"
+    if not current_bot_id:
+        return "当前未绑定 MC bot，无法执行指令"
 
-    if js_process and js_process.returncode is None:
-        if bot and event:
-            active_bot = bot
-            active_event = event
-            if persist_state:
-                _save_runtime_state(
-                    should_start=True,
-                    target=_extract_target_from_event(bot, event),
-                )
-            return False, "JS 脚本已经在运行中，已更新消息推送目标"
-        return False, "JS 脚本已经在运行中"
-
-    if bot and event:
-        active_bot = bot
-        active_event = event
-
-    js_stop_requested = False
-    js_stderr_lines = []
-    js_path = Path(__file__).parent / "src/index.js"
-
-    if JS_START_DELAY_SECONDS > 0:
-        logger.info(f"将在 {JS_START_DELAY_SECONDS} 秒后启动 JS 进程")
-        await asyncio.sleep(JS_START_DELAY_SECONDS)
+    permission = "admin" if level >= PermissionLevel.ADMIN else "user"
+    extra: dict[str, Any] = {"permission": permission}
+    if player_name:
+        extra["player_name"] = player_name
 
     try:
-        js_process = await asyncio.create_subprocess_exec(
-            "node",
-            str(js_path),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        reply = await _send_request(
+            "command",
+            {"command": command, "args": args, "wait": True},
+            bot_id=current_bot_id,
+            extra=extra,
+            timeout=max(config.mineflayer_ws_request_timeout, 15),
         )
-    except FileNotFoundError:
-        js_process = None
-        return False, "启动失败：未找到 Node.js，请先确认 node 命令可用"
-    except Exception as error:
-        js_process = None
-        logger.error(f"启动 JS 进程失败: {error}")
-        return False, f"启动失败：{error}"
-
-    asyncio.create_task(listen_to_js(), name="mineflayer-js-listener")
-    if persist_state:
-        _save_runtime_state(
-            should_start=True,
-            target=_extract_target_from_event(bot, event) if bot and event else None,
-        )
-    return True, "开启链接中..."
-
-
-async def _stop_js_process(*, persist_state: bool = True) -> tuple[bool, str]:
-    global js_process, js_stop_requested
-
-    process = js_process
-    if process is None or process.returncode is not None:
-        js_process = None
-        if persist_state:
-            _save_runtime_state(should_start=False)
-        return False, "JS 脚本没有在运行"
-
-    js_stop_requested = True
-    process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), timeout=10)
     except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
-    finally:
-        if js_process is process:
-            js_process = None
+        return "指令执行超时"
+    except Exception as error:
+        return f"指令执行失败：{error}"
 
-    if persist_state:
-        _save_runtime_state(should_start=False)
-    return True, "已停止连接"
+    result = reply.get("data", {}).get("result")
+    return _message_result_text(result)
 
 
 driver = get_driver()
 
 
 @driver.on_startup
-async def _restore_js_process_on_startup() -> None:
+async def _restore_ws_on_startup() -> None:
     state = _load_runtime_state()
-    if not state["should_start"]:
-        return
-
-    logger.info("检测到自动恢复已开启，将在 OneBot 连接后启动 JS 进程")
+    if state.get("should_connect"):
+        logger.info("检测到 WebSocket 自动恢复已开启，将在 OneBot 连接后恢复连接")
 
 
 @driver.on_bot_connect
@@ -655,109 +980,139 @@ async def _restore_target_bot_on_connect(bot: Bot) -> None:
     global active_bot
 
     state = _load_runtime_state()
-    saved_bot_id = state.get("bot_id")
+    saved_onebot_id = state.get("onebot_id")
     can_bind = (
-        not isinstance(saved_bot_id, str)
-        or not saved_bot_id
-        or str(bot.self_id) == saved_bot_id
+        not isinstance(saved_onebot_id, str)
+        or not saved_onebot_id
+        or str(bot.self_id) == saved_onebot_id
     )
+    if not can_bind:
+        return
 
-    if can_bind:
-        active_bot = bot
-        logger.info(f"已恢复消息推送 Bot: {bot.self_id}")
+    active_bot = bot
+    logger.info(f"已恢复消息推送 Bot: {bot.self_id}")
+    await _flush_pending_bridge_messages()
 
-        should_start = bool(state.get("should_start"))
-        is_running = js_process is not None and js_process.returncode is None
-        if should_start and not is_running:
-            started, message = await _start_js_process(persist_state=False)
-            if started:
-                logger.info("已在 OneBot 连接后自动恢复 JS 进程")
-            else:
-                logger.warning(f"OneBot 连接后自动恢复 JS 进程失败: {message}")
-
-        await _flush_pending_bridge_messages()
+    if state.get("should_connect") and not _is_ws_connected():
+        account = state.get("account_preset")
+        server = state.get("server_preset")
+        started, message = await _connect_ws(
+            bot=bot,
+            account_preset=account if isinstance(account, int) else None,
+            server_preset=server if isinstance(server, int) else None,
+            persist_state=False,
+        )
+        if started:
+            logger.info("已在 OneBot 连接后自动恢复 Mineflayer WebSocket")
+        else:
+            logger.warning(f"自动恢复 Mineflayer WebSocket 失败: {message}")
 
 
 @driver.on_shutdown
-async def _stop_js_process_on_shutdown() -> None:
-    if js_process is None or js_process.returncode is not None:
+async def _close_ws_on_shutdown() -> None:
+    if not _is_ws_connected():
         return
+    logger.info("Bot 正在关闭，断开 Mineflayer WebSocket")
+    await _close_ws_connection(persist_state=False)
 
-    logger.info("Bot 正在关闭，停止 JS 子进程")
-    await _stop_js_process(persist_state=False)
-
-
-# ===== NoneBot 指令处理器（QQ 端）=====
 
 @mc.handle()
-async def _(bot: Bot, event: Event, args: Message = CommandArg()):
+async def _(bot: Bot, event: Event, args: Message = CommandArg()) -> None:
     message_id = getattr(event, "message_id", None)
     await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
 
-    start = args.extract_plain_text().strip()
+    arg_list = args.extract_plain_text().strip().split()
+    command = arg_list[0] if arg_list else ""
 
-    if start == "start":
-        started, message = await _start_js_process(bot=bot, event=event, persist_state=True)
-        target_emoji = EMOJI_STATUS_SUCCESS if started else EMOJI_STATUS_FAILED
+    if command == "connect":
+        account = _parse_positive_int(arg_list[1]) if len(arg_list) > 1 else None
+        server = _parse_positive_int(arg_list[2]) if len(arg_list) > 2 else None
+        success, message = await _connect_ws(
+            bot=bot,
+            event=event,
+            account_preset=account,
+            server_preset=server,
+            persist_state=True,
+        )
         await mc.send(message)
-        await set_status_emoji(bot, message_id, target_emoji)
+        await set_status_emoji(
+            bot,
+            message_id,
+            EMOJI_STATUS_SUCCESS if success or _is_ws_connected() else EMOJI_STATUS_FAILED,
+        )
+        return
 
-    elif start == "stop":
-        stopped, message = await _stop_js_process(persist_state=True)
-        target_emoji = EMOJI_STATUS_SUCCESS if stopped else EMOJI_STATUS_FAILED
+    if command == "disconnect":
+        stopped, message = await _close_ws_connection(persist_state=True)
         await mc.send(message)
-        await set_status_emoji(bot, message_id, target_emoji)
+        await set_status_emoji(
+            bot,
+            message_id,
+            EMOJI_STATUS_SUCCESS if stopped else EMOJI_STATUS_FAILED,
+        )
+        return
 
-    elif start == "status":
-        result = await dispatch_command("mc", ["status"], PermissionLevel.ADMIN)
-        await mc.send(result)
+    if command == "logout":
+        success, message = await _logout_current_bot()
+        await mc.send(message)
+        await set_status_emoji(
+            bot,
+            message_id,
+            EMOJI_STATUS_SUCCESS if success else EMOJI_STATUS_FAILED,
+        )
+        return
+
+    if command == "status":
+        await mc.send(_format_status())
         await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
+        return
 
-    else:
-        await mc.send("干什么?!")
-        await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
+    await mc.send("用法: mc <connect|disconnect|logout|status>")
+    await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
 
 
 @tpa_cmd.handle()
-async def _(bot: Bot, event: Event, args: Message = CommandArg()):
+async def _(bot: Bot, event: Event, args: Message = CommandArg()) -> None:
     message_id = getattr(event, "message_id", None)
     await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
 
     arg_text = args.extract_plain_text().strip()
     arg_list = arg_text.split() if arg_text else []
-
     result = await dispatch_command("tpa", arg_list, PermissionLevel.ADMIN)
     if result:
         await tpa_cmd.send(result)
 
     success = "失败" not in result and "不足" not in result and "超时" not in result
-    target_emoji = EMOJI_STATUS_SUCCESS if success else EMOJI_STATUS_FAILED
-    await set_status_emoji(bot, message_id, target_emoji)
+    await set_status_emoji(
+        bot,
+        message_id,
+        EMOJI_STATUS_SUCCESS if success else EMOJI_STATUS_FAILED,
+    )
 
 
 @home_cmd.handle()
-async def _(bot: Bot, event: Event, args: Message = CommandArg()):
+async def _(bot: Bot, event: Event, args: Message = CommandArg()) -> None:
     message_id = getattr(event, "message_id", None)
     await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
 
     arg_text = args.extract_plain_text().strip()
     arg_list = arg_text.split() if arg_text else []
-
     result = await dispatch_command("home", arg_list, PermissionLevel.ADMIN)
     if result:
         await home_cmd.send(result)
 
     success = "失败" not in result and "超时" not in result
-    target_emoji = EMOJI_STATUS_SUCCESS if success else EMOJI_STATUS_FAILED
-    await set_status_emoji(bot, message_id, target_emoji)
+    await set_status_emoji(
+        bot,
+        message_id,
+        EMOJI_STATUS_SUCCESS if success else EMOJI_STATUS_FAILED,
+    )
 
 
 @bridge_input.handle()
-async def _(bot: Bot, event: Event):
-    process = js_process
-    if process is None or process.returncode is not None:
+async def _(bot: Bot, event: Event) -> None:
+    if not _is_ws_connected() or not current_bot_id:
         return
-
     if not _event_matches_runtime_target(bot, event):
         return
 
@@ -765,290 +1120,25 @@ async def _(bot: Bot, event: Event):
     if sender_id is not None and str(sender_id) == str(bot.self_id):
         return
 
-    plain_text = ""
-    if hasattr(event, "get_plaintext"):
-        plain_text = event.get_plaintext().strip()
+    plain_text = event.get_plaintext().strip() if hasattr(event, "get_plaintext") else ""
     if not plain_text:
         return
-
-    if plain_text.startswith("/mc") or plain_text.startswith("/connect"):
+    if plain_text.startswith(("/mc", "/connect", "#mc", "#tpa", "#home")):
         return
-    if plain_text.startswith("[插件服]>>"):
-        return
-
-    # 统一 IPC 格式
-    sent = await _write_ipc_to_js(IPC_ACTION_QQ_MESSAGE, {
-        "group_id": getattr(event, "group_id", None) or "",
-        "sender_id": str(sender_id or ""),
-        "msg": plain_text,
-    })
-    if not sent:
-        logger.debug("本条消息未写入 JS stdin")
-
-
-# ==========================================
-# 全局缓存 (核心思路)
-# ==========================================
-_LANG_CACHE = {
-    "zh_cn": {},
-    "en_us": {}
-}
-
-
-def _load_language_file(file_path):
-    """内部函数：读取 JSON 文件"""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning(f"警告：无法加载语言文件 '{file_path}'。原因: {e}")
-        return {}
-
-
-# ===== JS stdout/stderr 监听 =====
-
-async def read_stdout(process: asyncio.subprocess.Process):
-    """监听 JS stdout，解析统一 IPC 消息并分发处理。"""
-    while process.returncode is None:
-        line = await process.stdout.readline()
-        if not line:
-            break
-        try:
-            decoded_line = line.decode().strip()
-            if not decoded_line:
-                continue
-
-            envelope = _ipc_decode(decoded_line)
-            if envelope is None:
-                # 非 IPC 格式的普通输出
-                logger.debug(f"JS 普通输出: {decoded_line}")
-                continue
-
-            action = envelope["action"]
-            data = envelope.get("data", {})
-
-            if action == IPC_ACTION_MC_MESSAGE:
-                await _handle_mc_message(data)
-
-            elif action == IPC_ACTION_WHISPER_COMMAND:
-                await _handle_whisper_command(data)
-
-            elif action == IPC_ACTION_PLAYER_LIST:
-                await _handle_player_list(data)
-
-            elif action == IPC_ACTION_TPA_REQUEST_DETECTED:
-                await _handle_tpa_request_detected(data)
-
-            elif action == IPC_ACTION_TPA_NOTIFICATION:
-                msg = data.get("msg", "")
-                if msg:
-                    await _send_bridge_message(f"[插件服]>>{msg}")
-
-            elif action == IPC_ACTION_DELEGATE_RESULT:
-                await _handle_delegate_result(data)
-
-            else:
-                logger.warning(f"JS 发来未知 IPC action: {action}")
-
-        except Exception as e:
-            logger.error(f"解析 JS 数据失败: {e}")
-
-
-async def _handle_mc_message(received_msg: dict[str, object]) -> None:
-    """处理来自 JS 的 mc_message：翻译并转发到 QQ。"""
-    output = ""
-
-    if received_msg.get("type") == "whisper":
-        # whisper 已在 JS 端处理，不转发到 QQ
-        return
-
-    translate = received_msg.get("translate")
-    if translate:
-        params = received_msg.get("params", [])
-        match len(params):
-            case 1:
-                output = translate_mc_key(
-                    translate, "zh_cn",
-                    params[0]["name"] if isinstance(params[0], dict) else str(params[0]),
-                )
-            case 2:
-                output = translate_mc_key(
-                    translate, "zh_cn",
-                    params[0]["name"] if isinstance(params[0], dict) else str(params[0]),
-                    params[1]["name"] if isinstance(params[1], dict) else str(params[1]),
-                )
-            case 3:
-                output = translate_mc_key(
-                    translate, "zh_cn",
-                    params[0]["name"] if isinstance(params[0], dict) else str(params[0]),
-                    params[1]["name"] if isinstance(params[1], dict) else str(params[1]),
-                    params[2]["name"] if isinstance(params[2], dict) else str(params[2]),
-                )
-    elif received_msg.get("type") == "chat":
-        output = f"{received_msg.get('text', '')}"
-    else:
-        return
-
-    if output:
-        await _send_bridge_message(f"[插件服]>>{output}")
-
-
-async def _handle_whisper_command(data: dict[str, object]) -> None:
-    """处理来自 JS 的 whisper_command：执行指令并 whisper 回复。"""
-    player_name = data.get("player_name", "")
-    command = data.get("command", "")
-    args = data.get("args", [])
-    permission_level = data.get("permission_level", "user")
-
-    if not player_name or not command:
-        return
-
-    logger.info(f"MC whisper 指令: [{permission_level}] {player_name} -> {command} {args}")
-
-    try:
-        result = await dispatch_command(command, args, permission_level, player_name)
-    except Exception as e:
-        result = f"指令执行失败：{e}"
-        logger.error(f"whisper 指令执行异常: {e}")
-
-    if isinstance(result, str) and not result.strip():
-        return
-
-    # 通过 MC whisper 回复
-    await _send_whisper_reply(player_name, result)
-
-
-async def _handle_player_list(data: dict[str, object]) -> None:
-    """处理来自 JS 的 player_list：记录在线玩家快照。"""
-    from .player_tracker import record_snapshot
-
-    players = data.get("players", [])
-    timestamp = data.get("timestamp", "")
-    bot_username = data.get("bot_username", "")
-
-    if not isinstance(players, list):
+    if plain_text.startswith(config.mineflayer_ws_mc_prefix):
         return
 
     try:
-        record_snapshot(players, str(timestamp), bot_username=str(bot_username))
-    except Exception as e:
-        logger.error(f"记录玩家快照失败: {e}")
-
-
-async def _handle_tpa_request_detected(data: dict[str, object]) -> None:
-    """处理来自 JS 的 tpa_request_detected：记录 TPA 请求日志。"""
-    requester = data.get("requester", "")
-    tpa_type = data.get("type", "")
-
-    logger.info(f"TPA request detected: {requester} ({tpa_type})")
-
-
-async def _handle_delegate_result(data: dict[str, object]) -> None:
-    """处理来自 JS 的 delegate_result：将结果传递给等待的 Future。"""
-    reply_to = data.get("reply_to", "")
-
-    if not isinstance(reply_to, str):
-        reply_to = "" if reply_to is None else str(reply_to)
-
-    reply_to = reply_to.strip()
-
-    if not reply_to:
-        logger.warning("收到无 reply_to 的 delegate_result，忽略")
-        return
-
-    if reply_to in DELEGATE_RESULT_PENDING:
-        future = DELEGATE_RESULT_PENDING.pop(reply_to)
-        if not future.done():
-            future.set_result(data)
-    else:
-        # 没有等待的 Future，记录日志
-        result = data.get("result", "")
-        logger.info(f"Delegate result (no waiter): reply_to={reply_to}, result={result}")
-
-
-async def read_stderr(process: asyncio.subprocess.Process):
-    global js_stderr_lines
-    while process.returncode is None:
-        err = await process.stderr.readline()
-        if not err:
-            break
-        err_text = err.decode().strip()
-        logger.error(f"JS 错误输出: {err_text}")
-        if err_text:
-            js_stderr_lines.append(err_text)
-            # 只保留最后 8 行，避免消息过长
-            js_stderr_lines = js_stderr_lines[-8:]
-
-async def listen_to_js():
-    global js_process, js_stop_requested, js_stderr_lines
-    process = js_process
-    if process is None:
-        return
-
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # 拼接出 zh_cn.json 和 en_us.json 的绝对路径
-    zh_cn_path = os.path.join(current_dir, "../../configs/zh_cn.json")
-    en_us_path = os.path.join(current_dir, "../../configs/en_us.json")
-    # 模块加载时，立即把数据读进内存
-    _LANG_CACHE["zh_cn"] = _load_language_file(zh_cn_path)
-    _LANG_CACHE["en_us"] = _load_language_file(en_us_path)
-    logger.info("✅ MC 语言包已成功加载到内存！")
-
-    await asyncio.gather(
-        read_stdout(process),
-        read_stderr(process),
-        return_exceptions=True
-    )
-
-    await process.wait()
-    return_code = process.returncode
-
-    # 仅在非手动停止且退出码非 0 时，主动推送告警消息。
-    if (not js_stop_requested) and return_code not in (None, 0):
-        err_summary = "\n".join(js_stderr_lines).strip()
-        if not err_summary:
-            err_summary = "(无 stderr 输出)"
-        alert = f"[插件服] JS 进程异常退出，退出码: {return_code}\n最近错误输出：\n{err_summary}"
-
-        await _send_bridge_message(alert)
-
-    js_stop_requested = False
-    if js_process is process:
-        js_process = None
-
-
-# ===== MC 翻译 =====
-
-def translate_mc_key(key, lang="zh_cn", *args):
-    """
-    根据语言字典翻译键名，并替换其中的占位符。
-    """
-    # 指定语言字典 (直接从内存缓存中拿)
-    lang_data = _LANG_CACHE.get(lang, _LANG_CACHE["zh_cn"])
-
-    # 从字典中获取原始翻译文本
-    raw_text = lang_data.get(key)
-
-    # 如果找不到对应的键，直接返回提示
-    if not raw_text:
-        return f"[{key} 未找到]"
-
-    processed_args = []
-    for arg in args:
-        # 如果参数是字符串，并且这个字符串在语言包里能找到对应的翻译
-        if isinstance(arg, str) and arg in lang_data:
-            # 就把它替换成翻译后的中文/英文
-            processed_args.append(lang_data[arg])
-        else:
-            # 否则（比如是普通玩家名字、数字等），保持原样
-            processed_args.append(arg)
-
-    # 将 MC 的占位符 (%s, %d, %1$s, %2$s 等) 替换为 Python 的 {}
-    formatted_text = re.sub(r'%(\d+\$)?[sd]', ' {} ', raw_text)
-
-    # 填入变量
-    try:
-        return formatted_text.format(*processed_args)
-    except IndexError:
-        # 如果传入的 args 数量少于占位符数量，为了防止报错，原样返回带有占位符的文本
-        return raw_text
+        await _send_request(
+            "message",
+            {
+                "type": "chat",
+                "prefix": config.mineflayer_ws_forward_prefix,
+                "target_player": None,
+                "content": plain_text,
+            },
+            bot_id=current_bot_id,
+            timeout=config.mineflayer_ws_request_timeout,
+        )
+    except Exception as error:
+        logger.warning(f"转发 QQ 消息到 MC 失败: {error}")

@@ -46,27 +46,24 @@ _HIDDEN_PLUGINS: set[str] = {
 _GROUP_ORDER: list[str] = [
     "通用",
     "MC",
-    "MC-JS内置",
+    "MC-WebSocket",
     "管理",
     "其他",
 ]
-# 临时做法
-# 最少改动方案：静态补充 JS 内置指令，避免改 IPC 与 JS 侧目录上报。
 _STATIC_COMMANDS: dict[str, list[tuple[str, str, str]]] = {
-    "MC-JS内置": [
+    "MC-WebSocket": [
         (
             "tpa",
-            "TPA 控制（JS 内置）",
+            "TPA 控制（WebSocket 委托）",
             "#tpa [status|on|off|back]",
         ),
         (
             "home",
-            "Home 管理（JS 内置）",
+            "Home 管理（WebSocket 委托）",
             "#home <list|tp|set|remove> [名称]",
         ),
     ]
 }
-# end
 help_cmd = on_command("help", rule=to_me_or_prefix(), aliases={"帮助"}, priority=5)
 
 

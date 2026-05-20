@@ -2,7 +2,7 @@
 
 权限层级:
   - super: .env SUPERUSERS，不可变
-  - admin: 由 super 授权，持久化存储于 configs/admins.json
+  - admin: 由 super 授权，持久化存储于 data/admins.json
   - user:  默认权限
 """
 
@@ -21,7 +21,7 @@ from nonebot.permission import SUPERUSER, Permission
 
 
 class PermissionLevel(str, Enum):
-    """权限等级，值同时用于 IPC / dispatch 场景的字符串标识。"""
+    """权限等级，值同时用于 WebSocket 委托 / dispatch 场景的字符串标识。"""
 
     USER = "user"
     ADMIN = "admin"
@@ -46,7 +46,9 @@ class PermissionLevel(str, Enum):
 
 # ===== Admin 持久化 =====
 
-_ADMINS_PATH = Path(__file__).resolve().parents[2] / "configs" / "admins.json"
+_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+_ADMINS_PATH = _DATA_DIR / "admins.json"
+_LEGACY_ADMINS_PATH = Path(__file__).resolve().parents[2] / "configs" / "admins.json"
 
 # 内存缓存，避免每次查询都读磁盘
 _admins_cache: set[str] | None = None
@@ -56,14 +58,17 @@ def _load_admins() -> set[str]:
     """从 JSON 文件加载 admin 列表到内存。"""
     global _admins_cache  # noqa: PLW0603
 
-    if not _ADMINS_PATH.exists():
+    source_path = _ADMINS_PATH if _ADMINS_PATH.exists() else _LEGACY_ADMINS_PATH
+    if not source_path.exists():
         _admins_cache = set()
         return _admins_cache
 
     try:
-        data = json.loads(_ADMINS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(source_path.read_text(encoding="utf-8"))
         admins = data.get("admins", [])
         _admins_cache = {str(uid) for uid in admins if uid}
+        if source_path == _LEGACY_ADMINS_PATH:
+            _save_admins()
     except Exception as error:
         logger.warning(f"读取 admins.json 失败，使用空列表: {error}")
         _admins_cache = set()
