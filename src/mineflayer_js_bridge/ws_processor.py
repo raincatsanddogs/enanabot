@@ -225,58 +225,6 @@ async def _record_player_reply(reply: dict[str, Any]) -> None:
     )
 
 
-async def dispatch_command(
-    command: str,
-    args: list[str],
-    permission_level: str | PermissionLevel,
-    player_name: str | None = None,
-) -> str:
-    if isinstance(permission_level, str):
-        try:
-            level = PermissionLevel(permission_level)
-        except ValueError:
-            level = PermissionLevel.USER
-    else:
-        level = permission_level
-
-    full_command = command if not args else f"{command} {' '.join(args)}"
-    if level < PermissionLevel.ADMIN and full_command not in {"mc status"}:
-        return f"权限不足：{full_command}"
-
-    if command == "mc":
-        return await _dispatch_mc_command(args)
-    if command in {"tpa", "home"}:
-        return await _delegate_to_ws(command, args, level, player_name=player_name)
-    if command == "git":
-        return await _dispatch_git_command(args)
-    return f"未知指令：{command}"
-
-
-async def _dispatch_mc_command(args: list[str]) -> str:
-    if not args:
-        return "用法: mc <connect|disconnect|logout|status>"
-
-    sub = args[0]
-    if sub == "connect":
-        account = parse_positive_int(args[1]) if len(args) > 1 else None
-        server = parse_positive_int(args[2]) if len(args) > 2 else None
-        _, message = await _connect_ws(account_preset=account, server_preset=server)
-        return message
-
-    if sub == "disconnect":
-        _, message = await _close_ws_connection(persist_state=True)
-        return message
-
-    if sub == "logout":
-        _, message = await _logout_current_bot()
-        return message
-
-    if sub == "status":
-        return _format_status()
-
-    return "用法: mc <connect|disconnect|logout|status>"
-
-
 def _format_status() -> str:
     state = load_runtime_state()
     ws_text = "已连接" if _is_ws_connected() else "未连接"
@@ -305,17 +253,6 @@ def _format_status() -> str:
         f"- 待补发消息: {pending_text}"
     )
 
-
-async def _dispatch_git_command(args: list[str]) -> str:
-    if not args:
-        return "你说得对，但是git是一款由Linus Torvalds开发的......"
-    if args[0] == "pull":
-        return await execute_git_pull()
-    return "干什么?!"
-
-
-async def _execute_git_pull() -> str:
-    return await execute_git_pull()
 
 
 async def _delegate_to_ws(

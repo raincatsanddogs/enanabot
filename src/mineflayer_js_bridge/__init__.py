@@ -17,20 +17,16 @@ from .ws import (
     _close_ws_connection,
     _connect_ws,
     _delegate_to_ws,
-    _execute_git_pull,
     _format_status,
     _is_ws_connected,
     _logout_current_bot,
-    dispatch_command,
     forward_onebot_message,
 )
 
 __all__ = [
     "_close_ws_connection",
-    "_execute_git_pull",
     "_is_ws_connected",
     "config",
-    "dispatch_command",
 ]
 
 try:
