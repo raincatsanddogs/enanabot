@@ -16,6 +16,7 @@ from .runtime_state import (
     runtime_event_matches_target,
     save_runtime_state,
 )
+from .translation import try_translate_message
 
 __all__ = [
     "dispatch_nonebot_command",
@@ -33,4 +34,5 @@ __all__ = [
     "resolve_nonebot_command_target",
     "runtime_event_matches_target",
     "save_runtime_state",
+    "try_translate_message",
 ]

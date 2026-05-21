@@ -27,6 +27,7 @@ from .utils import (
     parse_positive_int,
     resolve_nonebot_command_target,
     save_runtime_state,
+    try_translate_message,
 )
 from .ws_bridge import _send_bridge_message
 from .ws_connection import (
@@ -82,7 +83,11 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
 
     text = data.get("text")
     if not isinstance(text, str) or not text.strip():
-        return
+        translated = try_translate_message(message)
+        if isinstance(translated, str) and translated.strip():
+            text = translated
+        else:
+            return
 
     await _send_bridge_message(f"{config.mineflayer_ws_mc_prefix}{text}")
 
