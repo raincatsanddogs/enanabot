@@ -12,19 +12,36 @@ import asyncio
 import hashlib
 import io
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any
 
 from nonebot import logger
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "configs"
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+LEGACY_DATA_DIR = Path(__file__).resolve().parents[2] / "configs"
 TRACKING_FILE = DATA_DIR / "player_tracking.jsonl"
 META_FILE = DATA_DIR / "player_meta.json"
 HEADS_DIR = DATA_DIR / "player_heads"
 BOT_NAME_FILE = DATA_DIR / "bot_username.txt"
+LEGACY_TRACKING_FILE = LEGACY_DATA_DIR / "player_tracking.jsonl"
+LEGACY_META_FILE = LEGACY_DATA_DIR / "player_meta.json"
+LEGACY_HEADS_DIR = LEGACY_DATA_DIR / "player_heads"
+LEGACY_BOT_NAME_FILE = LEGACY_DATA_DIR / "bot_username.txt"
 
 TWELVE_MONTHS_SECONDS = 365 * 24 * 3600
+
+
+def _migrate_file_if_needed(path: Path, legacy_path: Path) -> None:
+    if path.exists() or not legacy_path.exists():
+        return
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(legacy_path, path)
+    except Exception as error:
+        logger.warning(f"迁移旧玩家统计数据失败 {legacy_path}: {error}")
 
 
 def _save_bot_username(name: str) -> None:
@@ -37,6 +54,7 @@ def _save_bot_username(name: str) -> None:
 
 def get_bot_username() -> str:
     """读取持久化的 bot 用户名。"""
+    _migrate_file_if_needed(BOT_NAME_FILE, LEGACY_BOT_NAME_FILE)
     if BOT_NAME_FILE.exists():
         try:
             return BOT_NAME_FILE.read_text(encoding="utf-8").strip()
@@ -101,6 +119,7 @@ def load_records(
         until_ts = int(time.time())
 
     records: list[dict[str, Any]] = []
+    _migrate_file_if_needed(TRACKING_FILE, LEGACY_TRACKING_FILE)
     if not TRACKING_FILE.exists():
         return records
 
@@ -174,6 +193,7 @@ def cleanup_old_records() -> None:
 
 def load_player_meta() -> dict[str, dict[str, str]]:
     """加载玩家元数据映射。"""
+    _migrate_file_if_needed(META_FILE, LEGACY_META_FILE)
     if not META_FILE.exists():
         return {}
     try:
@@ -228,10 +248,18 @@ async def get_player_head(
 
     HEADS_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = HEADS_DIR / f"{uuid}.png"
+    legacy_cache_file = LEGACY_HEADS_DIR / f"{uuid}.png"
 
     # 缓存命中
     if cache_file.exists():
         return cache_file.read_bytes()
+    if legacy_cache_file.exists():
+        try:
+            HEADS_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_cache_file, cache_file)
+            return cache_file.read_bytes()
+        except Exception as error:
+            logger.warning(f"迁移玩家头像缓存失败 {legacy_cache_file}: {error}")
 
     # 下载并处理
     if not skin_url:

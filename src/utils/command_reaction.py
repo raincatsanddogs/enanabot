@@ -4,21 +4,75 @@ from __future__ import annotations
 
 from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
+from nonebot.matcher import Matcher
+from nonebot.message import run_postprocessor, run_preprocessor
 
 EMOJI_STATUS_PROCESSING = "424"
 EMOJI_STATUS_SUCCESS = "127847"
 EMOJI_STATUS_FAILED = "128560"
+STATUS_REACTION_RESULT_KEY = "_status_reaction_success"
 
 _STATUS_EMOJIS = [
     EMOJI_STATUS_PROCESSING,
     EMOJI_STATUS_SUCCESS,
     EMOJI_STATUS_FAILED,
 ]
+_HOOKED_MATCHERS: set[type[Matcher]] = set()
+_HOOKS_INSTALLED = False
 
 
-async def set_status_emoji(bot: Bot, message_id: int | None, target_emoji_id: str) -> None:
+def enable_status_reaction_hooks(*matcher_types: type[Matcher]) -> None:
+    """为指定 matcher 启用指令状态表情 hook。"""
+    global _HOOKS_INSTALLED
+
+    _HOOKED_MATCHERS.update(matcher_types)
+    if _HOOKS_INSTALLED:
+        return
+
+    _HOOKS_INSTALLED = True
+
+    @run_preprocessor
+    async def _set_processing_status(bot: Bot, event, matcher: Matcher) -> None:
+        if matcher.__class__ not in _HOOKED_MATCHERS:
+            return
+
+        message_id = _extract_message_id(event)
+        await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
+
+    @run_postprocessor
+    async def _set_finished_status(
+        bot: Bot,
+        event,
+        matcher: Matcher,
+        exception,
+    ) -> None:
+        if matcher.__class__ not in _HOOKED_MATCHERS:
+            return
+
+        message_id = _extract_message_id(event)
+        success = exception is None and matcher.state.get(
+            STATUS_REACTION_RESULT_KEY,
+            True,
+        )
+        await set_status_emoji(
+            bot,
+            message_id,
+            EMOJI_STATUS_SUCCESS if success else EMOJI_STATUS_FAILED,
+        )
+
+
+def mark_status_reaction_success(state: dict, success: bool) -> None:
+    """在 handler 中标记状态表情最终应显示成功或失败。"""
+    state[STATUS_REACTION_RESULT_KEY] = success
+
+
+async def set_status_emoji(
+    bot: Bot,
+    message_id: int | None,
+    target_emoji_id: str,
+) -> None:
     """为触发消息切换状态表情：先移除旧状态，再添加新状态。"""
-    if message_id is None:
+    if message_id is None or message_id < 0:
         return
 
     for emoji_id in _STATUS_EMOJIS:
@@ -71,3 +125,8 @@ async def _call_set_msg_emoji_like(
             )
 
     return False
+
+
+def _extract_message_id(event) -> int | None:
+    message_id = getattr(event, "message_id", None)
+    return message_id if isinstance(message_id, int) else None

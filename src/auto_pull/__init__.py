@@ -1,4 +1,3 @@
-import asyncio
 import os
 import sys
 from pathlib import Path
@@ -19,6 +18,7 @@ try:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from src.utils.git_ops import execute_git_pull
     from src.utils.trigger import to_me_or_prefix
 except ModuleNotFoundError:
     from utils.command_reaction import (
@@ -27,6 +27,7 @@ except ModuleNotFoundError:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from utils.git_ops import execute_git_pull
     from utils.trigger import to_me_or_prefix
 
 from .config import Config
@@ -48,7 +49,7 @@ sub_plugins = nonebot.load_plugins(
 git = on_command("git", rule=to_me_or_prefix(), aliases={"git"}, priority=5, permission=SUPERUSER)
 
 
-async def _stop_bridge_process_before_restart() -> None:
+async def _close_bridge_connection_before_restart() -> None:
 
     bridge_module = (
         sys.modules.get("mineflayer_js_bridge")
@@ -63,22 +64,22 @@ async def _stop_bridge_process_before_restart() -> None:
     if bridge_module is None:
         return
 
-    stop_func = getattr(bridge_module, "_stop_js_process", None)
-    process = getattr(bridge_module, "js_process", None)
-    if not callable(stop_func) or process is None:
+    close_func = getattr(bridge_module, "_close_ws_connection", None)
+    is_connected_func = getattr(bridge_module, "_is_ws_connected", None)
+    if not callable(close_func) or not callable(is_connected_func):
         return
 
-    if getattr(process, "returncode", None) is not None:
+    if not is_connected_func():
         return
 
     try:
-        stopped, message = await stop_func(persist_state=False)
+        stopped, message = await close_func(persist_state=False)
         if stopped:
-            logger.info("重启前已停止 mineflayer_js_bridge 的 JS 子进程")
+            logger.info("重启前已断开 mineflayer_js_bridge 的 WebSocket 连接")
         else:
-            logger.warning(f"重启前停止 JS 子进程返回: {message}")
+            logger.warning(f"重启前断开 WebSocket 返回: {message}")
     except Exception as error:
-        logger.exception(f"重启前停止 JS 子进程失败: {error}")
+        logger.exception(f"重启前断开 WebSocket 失败: {error}")
 
 @git.handle()
 async def _(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
@@ -89,54 +90,15 @@ async def _(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
     if sub_command == "pull":
         await git.send("pulling...")
 
-        # 复用 mineflayer_js_bridge 中的 _execute_git_pull
-        bridge_module = None
-        for module_name, module in sys.modules.items():
-            if module_name.endswith("mineflayer_js_bridge"):
-                bridge_module = module
-                break
-
-        execute_fn = getattr(bridge_module, "_execute_git_pull", None) if bridge_module else None
-
-        if callable(execute_fn):
-            result = await execute_fn()
-            await git.send(result)
-            if "更新失败" in result:
-                await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
-                return
-        else:
-            # 回退：直接执行（兼容 bridge 未加载的情况）
-            process = await asyncio.create_subprocess_shell(
-                (
-                    'git -c '
-                    'url."https://gh-proxy.org/https://github.com/".insteadOf='
-                    '"https://github.com/" pull'
-                ),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await process.communicate()
-            output = stdout.decode().strip() if stdout else ""
-            err_output = stderr.decode().strip() if stderr else ""
-
-            if process.returncode == 0:
-                await git.send(f"{output}")
-                git_log_process = await asyncio.create_subprocess_shell(
-                    'git log ORIG_HEAD..HEAD --pretty=format:"%h - %an : %s (%cr)"',
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                log_stdout, _ = await git_log_process.communicate()
-                await git.send(f"{log_stdout.decode().strip()}")
-            else:
-                await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
-                await git.send(f"更新失败 (错误码 {process.returncode}):\n{err_output}")
-                return
+        result = await execute_git_pull()
+        await git.send(result)
+        if "更新失败" in result:
+            await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
+            return
 
         await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
         await git.send("正在重启······")
-        await _stop_bridge_process_before_restart()
+        await _close_bridge_connection_before_restart()
         # 执行重启操作
         restart_bot()
     elif not sub_command:
