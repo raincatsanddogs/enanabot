@@ -29,25 +29,22 @@ from matplotlib import font_manager
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from nonebot import logger, on_command
 from nonebot.adapters import Message
-from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import MessageSegment
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
+from nonebot.typing import T_State
 from PIL import Image
 
 try:
     from src.utils.command_reaction import (
-        EMOJI_STATUS_FAILED,
-        EMOJI_STATUS_PROCESSING,
-        EMOJI_STATUS_SUCCESS,
-        set_status_emoji,
+        enable_status_reaction_hooks,
+        mark_status_reaction_success,
     )
     from src.utils.trigger import to_me_or_prefix
 except ModuleNotFoundError:
     from utils.command_reaction import (
-        EMOJI_STATUS_FAILED,
-        EMOJI_STATUS_PROCESSING,
-        EMOJI_STATUS_SUCCESS,
-        set_status_emoji,
+        enable_status_reaction_hooks,
+        mark_status_reaction_success,
     )
     from utils.trigger import to_me_or_prefix
 
@@ -186,6 +183,7 @@ CJK_FONT_AVAILABLE = _configure_matplotlib_fonts()
 plt.rcParams["axes.unicode_minus"] = False
 
 list_cmd = on_command("list", rule=to_me_or_prefix(), priority=5)
+enable_status_reaction_hooks(list_cmd)
 
 
 def _chart_text(cn: str, en: str) -> str:
@@ -198,14 +196,10 @@ def _chart_text(cn: str, en: str) -> str:
 
 @list_cmd.handle()
 async def handle_list(
-    bot: Bot,
-    event: MessageEvent,
+    state: T_State,
     args: Message = CommandArg(),
 ) -> None:
     """处理 list 指令。"""
-    message_id = getattr(event, "message_id", None)
-    await set_status_emoji(bot, message_id, EMOJI_STATUS_PROCESSING)
-
     args_text = args.extract_plain_text().strip()
     chart_type, duration_seconds = _parse_args(args_text)
 
@@ -215,7 +209,7 @@ async def handle_list(
     records = load_records(since_ts, now_ts)
 
     if not records:
-        await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
+        mark_status_reaction_success(state, True)
         await list_cmd.finish("该时间范围内没有在线数据记录 📭")
 
     duration_label = _format_duration(duration_seconds)
@@ -227,13 +221,13 @@ async def handle_list(
             img_bytes = await _generate_line_chart(records, duration_label)
     except Exception as e:
         logger.error(f"生成图表失败: {e}")
-        await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
+        mark_status_reaction_success(state, False)
         await list_cmd.finish(f"生成图表时出错：{e}")
 
     # 发送图片
     seg = MessageSegment.image(img_bytes)
     await list_cmd.send(seg)
-    await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
+    mark_status_reaction_success(state, True)
 
 
 

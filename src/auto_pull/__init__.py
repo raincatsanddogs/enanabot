@@ -1,4 +1,3 @@
-import asyncio
 import os
 import sys
 from pathlib import Path
@@ -19,6 +18,7 @@ try:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from src.utils.git_ops import execute_git_pull
     from src.utils.trigger import to_me_or_prefix
 except ModuleNotFoundError:
     from utils.command_reaction import (
@@ -27,6 +27,7 @@ except ModuleNotFoundError:
         EMOJI_STATUS_SUCCESS,
         set_status_emoji,
     )
+    from utils.git_ops import execute_git_pull
     from utils.trigger import to_me_or_prefix
 
 from .config import Config
@@ -89,50 +90,11 @@ async def _(bot: Bot, event: MessageEvent, args: Message = CommandArg()):
     if sub_command == "pull":
         await git.send("pulling...")
 
-        # 复用 mineflayer_js_bridge 中的 _execute_git_pull
-        bridge_module = None
-        for module_name, module in sys.modules.items():
-            if module_name.endswith("mineflayer_js_bridge"):
-                bridge_module = module
-                break
-
-        execute_fn = getattr(bridge_module, "_execute_git_pull", None) if bridge_module else None
-
-        if callable(execute_fn):
-            result = await execute_fn()
-            await git.send(result)
-            if "更新失败" in result:
-                await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
-                return
-        else:
-            # 回退：直接执行（兼容 bridge 未加载的情况）
-            process = await asyncio.create_subprocess_shell(
-                (
-                    'git -c '
-                    'url."https://gh-proxy.org/https://github.com/".insteadOf='
-                    '"https://github.com/" pull'
-                ),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await process.communicate()
-            output = stdout.decode().strip() if stdout else ""
-            err_output = stderr.decode().strip() if stderr else ""
-
-            if process.returncode == 0:
-                await git.send(f"{output}")
-                git_log_process = await asyncio.create_subprocess_shell(
-                    'git log ORIG_HEAD..HEAD --pretty=format:"%h - %an : %s (%cr)"',
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                log_stdout, _ = await git_log_process.communicate()
-                await git.send(f"{log_stdout.decode().strip()}")
-            else:
-                await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
-                await git.send(f"更新失败 (错误码 {process.returncode}):\n{err_output}")
-                return
+        result = await execute_git_pull()
+        await git.send(result)
+        if "更新失败" in result:
+            await set_status_emoji(bot, message_id, EMOJI_STATUS_FAILED)
+            return
 
         await set_status_emoji(bot, message_id, EMOJI_STATUS_SUCCESS)
         await git.send("正在重启······")
