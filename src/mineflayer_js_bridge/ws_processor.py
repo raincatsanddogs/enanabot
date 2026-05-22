@@ -86,6 +86,8 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
         return
 
     text = data.get("text")
+    position = data.get("position")
+    is_system = isinstance(position, str) and position == "system_info"
     is_normal_chat = False
 
     if not isinstance(text, str) or not text.strip():
@@ -115,7 +117,7 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
             else:
                 return
     else:
-        is_normal_chat = True
+        is_normal_chat = not is_system
 
     # 检查是否有玩家信息，若是普通聊天消息则拼接 `<玩家名称> ` 格式
     player_data = message.get("player") or data.get("player")

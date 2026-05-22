@@ -187,7 +187,7 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
     if translate_keys is None:
         return None
 
-    # 判断是否为进度（advancement）相关的系统消息
+    # 1. 判断是否为进度（advancement）相关的系统消息
     template_key = next((k for k in translate_keys if k.startswith("chat.type.advancement.")), None)
     if template_key:
         # 筛选出进度标题键（如 advancements.adventure.honey_block_slide.title）
@@ -205,6 +205,52 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
             template_key,
             title,
         )
+
+    # 2. 判断是否为其他 system_info 系统消息（如 join, left, death 等）
+    inner_data = message.get("data", {})
+    position = inner_data.get("position")
+    if isinstance(position, str) and position == "system_info":
+        sys_template_key = next(
+            (
+                k for k in translate_keys
+                if (
+                    k.startswith("multiplayer.player.")
+                    or k.startswith("death.")
+                    or k.startswith("chat.type.")
+                    or k.startswith("commands.")
+                    or k.startswith("gameMode.")
+                )
+            ),
+            None,
+        )
+        if not sys_template_key and translate_keys:
+            sys_template_key = translate_keys[0]
+
+        if sys_template_key:
+            template = get_translation(sys_template_key)
+            params = inner_data.get("params", [])
+            if not isinstance(params, list):
+                params = []
+
+            formatted_args = []
+            for p in params:
+                if isinstance(p, dict):
+                    name = p.get("name") or p.get("text")
+                    if isinstance(name, str) and name:
+                        # 嵌套翻译参数，如 entity.minecraft.zombie 等
+                        formatted_args.append(get_translation(name))
+                    else:
+                        formatted_args.append(str(name or p))
+                else:
+                    formatted_args.append(str(p))
+
+            # 兜底：如果无参数但有 player 且模板中存在占位符，使用玩家名字作为参数
+            if not formatted_args and ("%s" in template or "%1$s" in template):
+                player_name = _get_player_name(message)
+                if player_name != "玩家":
+                    formatted_args.append(player_name)
+
+            return format_minecraft_template(template, *formatted_args)
 
     return None
 
