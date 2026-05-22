@@ -264,6 +264,11 @@ def _format_status() -> str:
         else "未运行"
     )
 
+    if not config.mineflayer_ws_enable_push:
+        push_text = "关闭 (全局配置禁用)"
+    else:
+        push_text = "开启" if state.get("enable_push", True) else "关闭"
+
     return (
         "MC WebSocket 状态：\n"
         f"- 连接: {ws_text}\n"
@@ -271,6 +276,7 @@ def _format_status() -> str:
         f"- MC Bot: {bot_text}\n"
         f"- MC 状态: {bot_state}\n"
         f"- 推送目标: {target_text}\n"
+        f"- 消息推送: {push_text}\n"
         f"- 玩家轮询: {poller_text}\n"
         f"- 待补发消息: {pending_text}"
     )

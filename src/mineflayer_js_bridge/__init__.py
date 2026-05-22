@@ -12,7 +12,7 @@ from nonebot.typing import T_State
 
 from .config import Config
 from .context import config
-from .utils import parse_positive_int
+from .utils import load_runtime_state, parse_positive_int, save_runtime_state
 from .ws import (
     _close_ws_connection,
     _connect_ws,
@@ -47,7 +47,7 @@ except ModuleNotFoundError:
 __plugin_meta__ = PluginMetadata(
     name="mc",
     description="MC WebSocket 连接管理",
-    usage="mc <connect|disconnect|logout|status>",
+    usage="mc <connect|disconnect|logout|status|push>",
     config=Config,
     extra={"group": "MC"},
 )
@@ -111,7 +111,38 @@ async def _(
         mark_status_reaction_success(state, True)
         return
 
-    await mc.send("用法: mc <connect|disconnect|logout|status>")
+    if command == "push":
+        sub_arg = arg_list[1] if len(arg_list) > 1 else ""
+        current_state = load_runtime_state()
+        current_push = current_state.get("enable_push", True)
+
+        if sub_arg == "on":
+            save_runtime_state(
+                should_connect=current_state.get("should_connect", False),
+                enable_push=True,
+            )
+            await mc.send("已开启消息推送至 WS server")
+            mark_status_reaction_success(state, True)
+            return
+        elif sub_arg == "off":
+            save_runtime_state(
+                should_connect=current_state.get("should_connect", False),
+                enable_push=False,
+            )
+            await mc.send("已关闭消息推送至 WS server")
+            mark_status_reaction_success(state, True)
+            return
+        elif not sub_arg:
+            status_str = "开启" if current_push else "关闭"
+            await mc.send(f"当前消息推送至 WS server 状态为: {status_str}")
+            mark_status_reaction_success(state, True)
+            return
+        else:
+            await mc.send("用法: mc push <on|off>")
+            mark_status_reaction_success(state, False)
+            return
+
+    await mc.send("用法: mc <connect|disconnect|logout|status|push>")
     mark_status_reaction_success(state, False)
 
 

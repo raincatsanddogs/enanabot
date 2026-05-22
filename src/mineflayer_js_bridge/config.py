@@ -13,5 +13,6 @@ class Config(BaseModel):
     mineflayer_ws_player_poll_interval: int = 300
     mineflayer_ws_forward_prefix: str = "[群聊]>>"
     mineflayer_ws_mc_prefix: str = "[插件服]>>"
+    mineflayer_ws_enable_push: bool = True
     mineflayer_enable_mcgen: bool = True
     mineflayer_mcgen_api_url: str = "https://mcgen.menzerath.eu"

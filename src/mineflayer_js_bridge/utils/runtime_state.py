@@ -21,6 +21,7 @@ RUNTIME_STATE_DEFAULT: dict[str, bool | str | int | None] = {
     "target_id": None,
     "account_preset": None,
     "server_preset": None,
+    "enable_push": True,
 }
 
 
@@ -77,6 +78,8 @@ def load_runtime_state() -> dict[str, bool | str | int | None]:
         elif isinstance(value, str) and value.isdigit():
             state[key] = int(value)
 
+    state["enable_push"] = bool(loaded.get("enable_push", True))
+
     if path == LEGACY_RUNTIME_STATE_PATH:
         save_runtime_state(**state)
 
@@ -93,6 +96,7 @@ def save_runtime_state(
     target_id: int | None = None,
     account_preset: int | None = None,
     server_preset: int | None = None,
+    enable_push: bool | None = None,
     clear_current_bot: bool = False,
 ) -> None:
     previous = (
@@ -121,6 +125,9 @@ def save_runtime_state(
         "server_preset": server_preset
         if server_preset is not None
         else previous.get("server_preset"),
+        "enable_push": enable_push
+        if enable_push is not None
+        else previous.get("enable_push", True),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 

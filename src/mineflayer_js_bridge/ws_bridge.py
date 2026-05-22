@@ -114,6 +114,9 @@ async def _flush_pending_bridge_messages() -> None:
 async def forward_onebot_message(bot: Bot, event: Event) -> None:
     if ws_state.ws_connection is None or not ws_state.current_bot_id:
         return
+    state = load_runtime_state()
+    if not config.mineflayer_ws_enable_push or not state.get("enable_push", True):
+        return
     if not event_matches_runtime_target(
         bot,
         event,
