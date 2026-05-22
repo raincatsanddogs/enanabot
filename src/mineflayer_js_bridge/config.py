@@ -16,3 +16,5 @@ class Config(BaseModel):
     mineflayer_ws_enable_push: bool = True
     mineflayer_enable_mcgen: bool = True
     mineflayer_mcgen_api_url: str = "https://mcgen.menzerath.eu"
+    mineflayer_ws_player_info_type: str = "nickname"
+

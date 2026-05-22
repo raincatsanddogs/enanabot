@@ -18,6 +18,7 @@ from .runtime_state import (
 )
 from .translation import (
     fetch_achievement_image,
+    get_player_name_by_config,
     try_parse_advancement_message,
     try_translate_message,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "resolve_nonebot_command_target",
     "runtime_event_matches_target",
     "save_runtime_state",
+    "get_player_name_by_config",
     "try_parse_advancement_message",
     "try_translate_message",
 ]

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from nonebot import logger
-from nonebot.adapters.onebot.v11 import MessageSegment
+from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
 try:
     from src.utils.git_ops import execute_git_pull
@@ -24,6 +24,7 @@ from .utils import (
     extract_command_user_id,
     fetch_achievement_image,
     format_target,
+    get_player_name_by_config,
     load_runtime_state,
     message_result_text,
     parse_positive_int,
@@ -85,6 +86,8 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
         return
 
     text = data.get("text")
+    is_normal_chat = False
+
     if not isinstance(text, str) or not text.strip():
         advancement = try_parse_advancement_message(message)
         if advancement is not None:
@@ -94,7 +97,13 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
                         config.mineflayer_mcgen_api_url,
                         advancement,
                     )
-                    await _send_bridge_message(MessageSegment.image(image_data))
+                    # 发送带有玩家进度文本的 OneBot 消息（包含文本和进度图片）
+                    msg = Message()
+                    if config.mineflayer_ws_mc_prefix:
+                        msg.append(config.mineflayer_ws_mc_prefix)
+                    msg.append(advancement.fallback_text)
+                    msg.append(MessageSegment.image(image_data))
+                    await _send_bridge_message(msg)
                     return
                 except Exception as error:
                     logger.warning(f"mcgen 进度图片渲染失败，已回退纯文本: {error}")
@@ -105,6 +114,14 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
                 text = translated
             else:
                 return
+    else:
+        is_normal_chat = True
+
+    # 检查是否有玩家信息，若是普通聊天消息则拼接 `<玩家名称> ` 格式
+    player_data = message.get("player") or data.get("player")
+    if is_normal_chat and isinstance(player_data, dict):
+        player_name = get_player_name_by_config(player_data)
+        text = f"<{player_name}> {text}"
 
     await _send_bridge_message(f"{config.mineflayer_ws_mc_prefix}{text}")
 

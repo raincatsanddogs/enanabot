@@ -44,10 +44,12 @@ MINEFLAYER_WS_REQUEST_TIMEOUT=10
 MINEFLAYER_WS_PLAYER_POLL_INTERVAL=300
 MINEFLAYER_WS_FORWARD_PREFIX=[群聊]>>
 MINEFLAYER_WS_MC_PREFIX=[插件服]>>
-MINEFLAYER_WS_ENABLE_PUSH=true
 MINEFLAYER_ENABLE_MCGEN=true
 MINEFLAYER_MCGEN_API_URL=https://mcgen.menzerath.eu
+MINEFLAYER_WS_PLAYER_INFO_TYPE=nickname
 ```
+
+`MINEFLAYER_WS_PLAYER_INFO_TYPE` 字段用于设定群聊转发消息时，玩家名称的展示类型。可选值为 `nickname`（使用昵称，不存在则回退为游戏 ID）或 `id`（使用游戏 ID，不存在则回退为昵称），默认值为 `nickname`。若消息包含玩家信息，转发至群聊时会在文本前自动拼接 `<玩家名称> ` 标识。
 
 `MINEFLAYER_ENABLE_MCGEN` 默认开启。收到 Minecraft 进度/挑战/目标消息时，机器人会调用
 `MINEFLAYER_MCGEN_API_URL` 对应的 mcgen 服务渲染图片：图片标题使用翻译后的进度标题，正文使用翻译后的进度描述。

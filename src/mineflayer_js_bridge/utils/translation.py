@@ -73,13 +73,41 @@ def _get_translate_keys(message: dict[str, Any]) -> list[str] | None:
     return [key for key in translate_keys if isinstance(key, str)]
 
 
+def get_player_name_by_config(player_data: dict[str, Any]) -> str:
+    """
+    根据配置项 mineflayer_ws_player_info_type 提取并返回玩家名字
+    """
+    from ..context import config
+
+    info_type = getattr(config, "mineflayer_ws_player_info_type", "nickname").lower()
+
+    if info_type == "id":
+        name = (
+            player_data.get("username")
+            or player_data.get("player_name")
+            or player_data.get("nickname")
+            or player_data.get("displayName")
+        )
+    else:  # "nickname"
+        name = (
+            player_data.get("nickname")
+            or player_data.get("displayName")
+            or player_data.get("username")
+            or player_data.get("player_name")
+        )
+
+    if isinstance(name, dict):
+        name = name.get("text") or str(name)
+
+    return name if isinstance(name, str) and name else "玩家"
+
+
 def _get_player_name(message: dict[str, Any]) -> str:
     player = message.get("player")
     if isinstance(player, dict):
-        username = player.get("username")
-        if isinstance(username, str) and username:
-            return username
+        return get_player_name_by_config(player)
     return "玩家"
+
 
 
 def _get_advancement_type(template_key: str) -> AdvancementType | None:
