@@ -16,7 +16,11 @@ from .runtime_state import (
     runtime_event_matches_target,
     save_runtime_state,
 )
-from .translation import try_translate_message
+from .translation import (
+    fetch_achievement_image,
+    try_parse_advancement_message,
+    try_translate_message,
+)
 
 __all__ = [
     "dispatch_nonebot_command",
@@ -24,6 +28,7 @@ __all__ = [
     "extract_command_nickname",
     "extract_command_user_id",
     "extract_target_from_event",
+    "fetch_achievement_image",
     "format_target",
     "is_local_command_text",
     "load_runtime_state",
@@ -34,5 +39,6 @@ __all__ = [
     "resolve_nonebot_command_target",
     "runtime_event_matches_target",
     "save_runtime_state",
+    "try_parse_advancement_message",
     "try_translate_message",
 ]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from nonebot import get_bots, logger
-from nonebot.adapters.onebot.v11 import Bot, Event
+from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment
 
 from . import ws_state
 from .context import config
@@ -14,9 +14,25 @@ from .utils import (
 )
 from .ws_transport import _send_request
 
+BridgeMessage = str | Message | MessageSegment
 
-async def _send_bridge_message(message: str) -> None:
-    if not message:
+
+def _normalize_bridge_message(message: BridgeMessage) -> str | Message:
+    if isinstance(message, MessageSegment):
+        return Message(message)
+    return message
+
+
+def _is_empty_bridge_message(message: BridgeMessage) -> bool:
+    if isinstance(message, str):
+        return not message
+    if isinstance(message, Message):
+        return len(message) == 0
+    return False
+
+
+async def _send_bridge_message(message: BridgeMessage) -> None:
+    if _is_empty_bridge_message(message):
         return
 
     delivered = await _try_send_bridge_message(message)
@@ -27,13 +43,14 @@ async def _send_bridge_message(message: str) -> None:
     logger.warning("桥接消息暂存：OneBot 尚未就绪或目标不可用，等待连接恢复后补发")
 
 
-async def _try_send_bridge_message(message: str) -> bool:
-    if not message:
+async def _try_send_bridge_message(message: BridgeMessage) -> bool:
+    if _is_empty_bridge_message(message):
         return True
+    normalized_message = _normalize_bridge_message(message)
 
     if ws_state.active_bot and ws_state.active_event:
         try:
-            await ws_state.active_bot.send(ws_state.active_event, message)
+            await ws_state.active_bot.send(ws_state.active_event, normalized_message)
             return True
         except Exception as error:
             logger.error(f"通过事件上下文发送消息失败: {error}")
@@ -57,13 +74,13 @@ async def _try_send_bridge_message(message: str) -> bool:
             await bot_instance.call_api(
                 "send_group_msg",
                 group_id=target_id,
-                message=message,
+                message=normalized_message,
             )
         else:
             await bot_instance.call_api(
                 "send_private_msg",
                 user_id=target_id,
-                message=message,
+                message=normalized_message,
             )
         return True
     except Exception as error:

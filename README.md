@@ -44,7 +44,13 @@ MINEFLAYER_WS_REQUEST_TIMEOUT=10
 MINEFLAYER_WS_PLAYER_POLL_INTERVAL=300
 MINEFLAYER_WS_FORWARD_PREFIX=[群聊]>>
 MINEFLAYER_WS_MC_PREFIX=[插件服]>>
+MINEFLAYER_ENABLE_MCGEN=true
+MINEFLAYER_MCGEN_API_URL=https://mcgen.menzerath.eu
 ```
+
+`MINEFLAYER_ENABLE_MCGEN` 默认开启。收到 Minecraft 进度/挑战/目标消息时，机器人会调用
+`MINEFLAYER_MCGEN_API_URL` 对应的 mcgen 服务渲染图片：图片标题使用翻译后的进度标题，正文使用翻译后的进度描述。
+公共服务网络抖动、限流或私有地址不可用时，会自动回退为原来的纯文本通知。
 
 Python 运行时数据写入 `data/`，包括权限、玩家统计和桥接状态。旧 `configs/` 中的同名运行时数据会在首次读取时兼容迁移。
 

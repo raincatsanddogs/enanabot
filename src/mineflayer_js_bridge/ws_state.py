@@ -9,7 +9,7 @@ import asyncio
 from collections import deque
 from typing import Any
 
-from nonebot.adapters.onebot.v11 import Bot, Event
+from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment
 
 active_bot: Bot | None = None
 active_event: Event | None = None
@@ -21,4 +21,4 @@ current_bot_id: str | None = None
 current_bot_state = "offline"
 pending_replies: dict[str, asyncio.Future[dict[str, Any]]] = {}
 connection_lock = asyncio.Lock()
-pending_bridge_messages: deque[str] = deque(maxlen=50)
+pending_bridge_messages: deque[str | Message | MessageSegment] = deque(maxlen=50)

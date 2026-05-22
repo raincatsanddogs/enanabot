@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from nonebot import logger
+from nonebot.adapters.onebot.v11 import MessageSegment
 
 try:
     from src.utils.git_ops import execute_git_pull
@@ -21,12 +22,14 @@ from .utils import (
     dispatch_nonebot_command,
     extract_command_nickname,
     extract_command_user_id,
+    fetch_achievement_image,
     format_target,
     load_runtime_state,
     message_result_text,
     parse_positive_int,
     resolve_nonebot_command_target,
     save_runtime_state,
+    try_parse_advancement_message,
     try_translate_message,
 )
 from .ws_bridge import _send_bridge_message
@@ -83,11 +86,25 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
 
     text = data.get("text")
     if not isinstance(text, str) or not text.strip():
-        translated = try_translate_message(message)
-        if isinstance(translated, str) and translated.strip():
-            text = translated
+        advancement = try_parse_advancement_message(message)
+        if advancement is not None:
+            if config.mineflayer_enable_mcgen:
+                try:
+                    image_data = await fetch_achievement_image(
+                        config.mineflayer_mcgen_api_url,
+                        advancement,
+                    )
+                    await _send_bridge_message(MessageSegment.image(image_data))
+                    return
+                except Exception as error:
+                    logger.warning(f"mcgen 进度图片渲染失败，已回退纯文本: {error}")
+            text = advancement.fallback_text
         else:
-            return
+            translated = try_translate_message(message)
+            if isinstance(translated, str) and translated.strip():
+                text = translated
+            else:
+                return
 
     await _send_bridge_message(f"{config.mineflayer_ws_mc_prefix}{text}")
 
