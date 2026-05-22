@@ -96,16 +96,33 @@ def get_player_name_by_config(player_data: dict[str, Any]) -> str:
             or player_data.get("player_name")
         )
 
-    if isinstance(name, dict):
+    if isinstance(name, list):
+        parts = []
+        for node in name:
+            if isinstance(node, dict):
+                parts.append(node.get("text") or "")
+            elif isinstance(node, str):
+                parts.append(node)
+        name = "".join(parts).strip()
+    elif isinstance(name, dict):
         name = name.get("text") or str(name)
 
     return name if isinstance(name, str) and name else "玩家"
 
 
 def _get_player_name(message: dict[str, Any]) -> str:
+    data = message.get("data")
     player = message.get("player")
+    if not player and isinstance(data, dict):
+        player = data.get("player")
+
+    if isinstance(player, list) and player:
+        player = player[0]
+
     if isinstance(player, dict):
         return get_player_name_by_config(player)
+    if isinstance(player, str) and player:
+        return player
     return "玩家"
 
 

@@ -119,6 +119,8 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
 
     # 检查是否有玩家信息，若是普通聊天消息则拼接 `<玩家名称> ` 格式
     player_data = message.get("player") or data.get("player")
+    if isinstance(player_data, list) and player_data:
+        player_data = player_data[0]
     if is_normal_chat and isinstance(player_data, dict):
         player_name = get_player_name_by_config(player_data)
         text = f"<{player_name}> {text}"
