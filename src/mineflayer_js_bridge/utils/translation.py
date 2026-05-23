@@ -262,11 +262,22 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
                 else:
                     formatted_args.append(str(p))
 
-            # 兜底：如果无参数但有 player 且模板中存在占位符，使用玩家名字作为参数
-            if not formatted_args and ("%s" in template or "%1$s" in template):
-                player_name = _get_player_name(message)
-                if player_name != "玩家":
-                    formatted_args.append(f"{player_name} ")
+            # 兜底：如果无参数，尝试使用 translate_keys 中的后续键作为参数，并结合玩家信息
+            if not formatted_args:
+                remaining_keys = [k for k in translate_keys if k != sys_template_key]
+                translated_params = [get_translation(k) for k in remaining_keys]
+                player_data = message.get("player") or inner_data.get("player")
+                if player_data is not None:
+                    player_name = _get_player_name(message)
+                    formatted_args = [player_name] + translated_params
+                else:
+                    formatted_args = translated_params
+
+                # 如果仍然为空且模板包含占位符，则将玩家名称作为参数放入
+                if not formatted_args and ("%s" in template or "%1$s" in template):
+                    player_name = _get_player_name(message)
+                    if player_name != "玩家":
+                        formatted_args.append(f"{player_name} ")
 
             return format_minecraft_template(template, *formatted_args)
 
