@@ -67,10 +67,31 @@ def _get_translate_keys(message: dict[str, Any]) -> list[str] | None:
         return None
 
     translate_keys = inner_data.get("translate")
+
+    # 回退：部分消息将 translate 放在 extra 中（如 multiplayer.player.joined）
+    if not isinstance(translate_keys, list) or not translate_keys:
+        extra = message.get("extra")
+        if isinstance(extra, dict):
+            translate_keys = extra.get("translate")
+
     if not isinstance(translate_keys, list) or not translate_keys:
         return None
 
     return [key for key in translate_keys if isinstance(key, str)]
+
+
+def _is_nonempty_name(value: Any) -> bool:
+    """判断一个候选名称值是否为有效的非空值（过滤空字典、空列表等）。"""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        # 空字典 {} 或仅含空 text 的字典视为无效
+        return bool(value) and bool((value.get("text") or "").strip())
+    if isinstance(value, list):
+        return bool(value)
+    return False
 
 
 def get_player_name_by_config(player_data: dict[str, Any]) -> str:
@@ -82,19 +103,16 @@ def get_player_name_by_config(player_data: dict[str, Any]) -> str:
     info_type = getattr(config, "mineflayer_ws_player_info_type", "nickname").lower()
 
     if info_type == "id":
-        name = (
-            player_data.get("username")
-            or player_data.get("player_name")
-            or player_data.get("nickname")
-            or player_data.get("displayName")
-        )
+        candidates = ["username", "player_name", "nickname", "displayName"]
     else:  # "nickname"
-        name = (
-            player_data.get("nickname")
-            or player_data.get("displayName")
-            or player_data.get("username")
-            or player_data.get("player_name")
-        )
+        candidates = ["nickname", "displayName", "username", "player_name"]
+
+    name: Any = None
+    for key in candidates:
+        val = player_data.get(key)
+        if _is_nonempty_name(val):
+            name = val
+            break
 
     if isinstance(name, list):
         parts = []
@@ -105,7 +123,7 @@ def get_player_name_by_config(player_data: dict[str, Any]) -> str:
                 parts.append(node)
         name = "".join(parts).strip()
     elif isinstance(name, dict):
-        name = name.get("text") or str(name)
+        name = (name.get("text") or "").strip()
 
     return name if isinstance(name, str) and name else "玩家"
 
