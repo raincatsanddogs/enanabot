@@ -266,7 +266,7 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
             if not formatted_args and ("%s" in template or "%1$s" in template):
                 player_name = _get_player_name(message)
                 if player_name != "玩家":
-                    formatted_args.append(player_name)
+                    formatted_args.append(f"`{player_name} `")
 
             return format_minecraft_template(template, *formatted_args)
 

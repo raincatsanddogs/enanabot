@@ -127,7 +127,7 @@ async def _handle_mc_message(message: dict[str, Any]) -> None:
         player_name = get_player_name_by_config(player_data)
         text = f"<{player_name}> {text}"
 
-    await _send_bridge_message(f"{config.mineflayer_ws_mc_prefix}{text}")
+    await _send_bridge_message(f"{config.mineflayer_ws_mc_prefix} {text}")
 
 
 async def _handle_server_event(message: dict[str, Any]) -> None:
