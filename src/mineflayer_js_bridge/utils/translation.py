@@ -262,16 +262,71 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
                 else:
                     formatted_args.append(str(p))
 
-            # 兜底：如果无参数，尝试使用 translate_keys 中的后续键作为参数，并结合玩家信息
+            # 兜底：如果无参数，尝试从结构化数据或翻译键列表中提取参数
             if not formatted_args:
-                remaining_keys = [k for k in translate_keys if k != sys_template_key]
-                translated_params = [get_translation(k) for k in remaining_keys]
+                # 1. 优先尝试从结构化的 player/entity/item 数据中解析参数
                 player_data = message.get("player") or inner_data.get("player")
-                if player_data is not None:
-                    player_name = _get_player_name(message)
-                    formatted_args = [player_name] + translated_params
+                player_name = _get_player_name(message) if player_data is not None else None
+
+                # 解析 entity (击杀者)
+                entity_list = inner_data.get("entity", [])
+                entity_name = None
+                if isinstance(entity_list, list) and entity_list:
+                    entity_data = entity_list[0]
+                    if isinstance(entity_data, dict):
+                        raw_name = entity_data.get("name")
+                        if isinstance(raw_name, dict) and "translate" in raw_name:
+                            entity_name = get_translation(raw_name["translate"])
+                        elif isinstance(raw_name, str) and raw_name.strip():
+                            entity_name = raw_name.strip()
+                        else:
+                            entity_id = entity_data.get("id")
+                            if isinstance(entity_id, str) and entity_id.strip():
+                                entity_key = f"entity.{entity_id.replace(':', '.')}"
+                                entity_name = get_translation(entity_key)
+
+                # 解析 item (武器/道具)
+                item_list = inner_data.get("item", [])
+                item_name = None
+                if isinstance(item_list, list) and item_list:
+                    item_data = item_list[0]
+                    if isinstance(item_data, dict):
+                        raw_name = item_data.get("display_name") or item_data.get("name")
+                        if isinstance(raw_name, dict) and "translate" in raw_name:
+                            item_name = get_translation(raw_name["translate"])
+                        elif isinstance(raw_name, str) and raw_name.strip():
+                            item_name = raw_name.strip()
+                        else:
+                            item_id = item_data.get("id")
+                            if isinstance(item_id, str) and item_id.strip():
+                                item_key = f"item.{item_id.replace(':', '.')}"
+                                item_name = get_translation(item_key)
+                                if item_name == item_key:
+                                    block_key = f"block.{item_id.replace(':', '.')}"
+                                    item_name = get_translation(block_key)
+                if item_name and "chat.square_brackets" in translate_keys:
+                    bracket_template = get_translation("chat.square_brackets")
+                    item_name = format_minecraft_template(bracket_template, item_name)
+
+                # 组合解析出的结构化参数
+                extracted_args = []
+                if player_name:
+                    extracted_args.append(player_name)
+                if entity_name:
+                    extracted_args.append(entity_name)
+                if item_name:
+                    extracted_args.append(item_name)
+
+                # 2. 如果未能从结构化字段中解析出非玩家参数（长度 <= 1），则使用原有 translate_keys 的翻译键提取逻辑
+                if len(extracted_args) <= 1:
+                    remaining_keys = [k for k in translate_keys if k not in {sys_template_key, "chat.square_brackets"}]
+                    translated_params = [get_translation(k) for k in remaining_keys]
+                    if player_name:
+                        formatted_args = [player_name] + translated_params
+                    else:
+                        formatted_args = translated_params
                 else:
-                    formatted_args = translated_params
+                    formatted_args = extracted_args
 
                 # 如果仍然为空且模板包含占位符，则将玩家名称作为参数放入
                 if not formatted_args and ("%s" in template or "%1$s" in template):
@@ -279,7 +334,10 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
                     if player_name != "玩家":
                         formatted_args.append(f"{player_name} ")
 
-            return format_minecraft_template(template, *formatted_args)
+            # 给各个名字参数前后加上空格，格式化模板，并合并多余空格
+            spaced_args = [f" {arg} " if arg else "" for arg in formatted_args]
+            raw_result = format_minecraft_template(template, *spaced_args)
+            return re.sub(r'\s+', ' ', raw_result).strip()
 
     return None
 
