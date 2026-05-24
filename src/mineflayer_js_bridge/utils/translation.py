@@ -118,7 +118,7 @@ def get_player_name_by_config(player_data: dict[str, Any]) -> str:
         parts = []
         for node in name:
             if isinstance(node, dict):
-                parts.append(node.get("text") or "")
+                parts.append(node.get("text") or node.get("") or "")
             elif isinstance(node, str):
                 parts.append(node)
         name = "".join(parts).strip()
