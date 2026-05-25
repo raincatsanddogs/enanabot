@@ -56,6 +56,9 @@ def get_translation(key: str) -> str:
         "chat.type.advancement.challenge": "%s完成了挑战%s",
         "chat.type.advancement.goal": "%s达成了目标%s",
         "chat.square_brackets": "[%s]",
+        "advancements.toast.task": "进度已达成！",
+        "advancements.toast.challenge": "挑战已完成！",
+        "advancements.toast.goal": "目标已达成！",
     }
 
     return _translations.get(key) or fallback_templates.get(key, key)
@@ -405,13 +408,18 @@ async def fetch_achievement_image(
 
     endpoint = f"{api_url.rstrip('/')}/api/v1/achievement"
     background = _advancement_backgrounds[advancement.advancement_type]
+
+    # 获取原版 Toast 标题（例如：“进度已达成！”、“挑战已完成！”、“目标已达成！”）
+    toast_key = f"advancements.toast.{advancement.advancement_type}"
+    toast_title = get_translation(toast_key)
+
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.get(
             endpoint,
             params={
                 "background": background,
-                "title": advancement.title,
-                "text": advancement.description,
+                "title": toast_title,
+                "text": advancement.title,
             },
         )
     response.raise_for_status()
