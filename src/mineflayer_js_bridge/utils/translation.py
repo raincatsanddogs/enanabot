@@ -411,7 +411,7 @@ async def fetch_achievement_image(
 
     # 获取原版 Toast 标题（例如：“进度已达成！”、“挑战已完成！”、“目标已达成！”）
     toast_key = f"advancements.toast.{advancement.advancement_type}"
-    toast_title = get_translation(toast_key)
+    toast_title = get_translation(toast_key).replace("！", "!")
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.get(
