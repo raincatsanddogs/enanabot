@@ -268,8 +268,18 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
             # 兜底：如果无参数，尝试从结构化数据或翻译键列表中提取参数
             if not formatted_args:
                 # 1. 优先尝试从结构化的 player/entity/item 数据中解析参数
+                player_names = []
                 player_data = message.get("player") or inner_data.get("player")
-                player_name = _get_player_name(message) if player_data is not None else None
+                if isinstance(player_data, list) and player_data:
+                    for p in player_data:
+                        if isinstance(p, dict):
+                            player_names.append(get_player_name_by_config(p))
+                        elif isinstance(p, str) and p:
+                            player_names.append(p)
+                elif isinstance(player_data, dict):
+                    player_names.append(get_player_name_by_config(player_data))
+                elif isinstance(player_data, str) and player_data:
+                    player_names.append(player_data)
 
                 # 解析 entity (击杀者)
                 entity_list = inner_data.get("entity", [])
@@ -313,9 +323,9 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
 
                 # 组合解析出的结构化参数
                 extracted_args = []
-                if player_name:
-                    extracted_args.append(player_name)
-                if entity_name:
+                if player_names:
+                    extracted_args.extend(player_names)
+                if entity_name and entity_name not in extracted_args:
                     extracted_args.append(entity_name)
                 if item_name:
                     extracted_args.append(item_name)
@@ -324,8 +334,9 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
                 if len(extracted_args) <= 1:
                     remaining_keys = [k for k in translate_keys if k not in {sys_template_key, "chat.square_brackets"}]
                     translated_params = [get_translation(k) for k in remaining_keys]
-                    if player_name:
-                        formatted_args = [player_name] + translated_params
+                    primary_player = player_names[0] if player_names else None
+                    if primary_player:
+                        formatted_args = [primary_player] + translated_params
                     else:
                         formatted_args = translated_params
                 else:
