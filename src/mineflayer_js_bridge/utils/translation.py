@@ -83,6 +83,41 @@ def _get_translate_keys(message: dict[str, Any]) -> list[str] | None:
     return [key for key in translate_keys if isinstance(key, str)]
 
 
+def parse_text_component(component: Any) -> str:
+    """
+    递归解析 Minecraft 文本组件（支持 str, dict, list 等结构），提取出纯文本内容。
+    """
+    if component is None:
+        return ""
+    if isinstance(component, str):
+        return component
+    if isinstance(component, (int, float, bool)):
+        return str(component)
+    if isinstance(component, list):
+        return "".join(parse_text_component(item) for item in component)
+    if isinstance(component, dict):
+        if "translate" in component:
+            translate_key = component["translate"]
+            template = get_translation(translate_key)
+            with_args = component.get("with", [])
+            if not isinstance(with_args, list):
+                with_args = [with_args]
+            parsed_args = [parse_text_component(arg) for arg in with_args]
+            text = format_minecraft_template(template, *parsed_args)
+        else:
+            text = component.get("text") or component.get("") or ""
+            if not isinstance(text, str):
+                text = parse_text_component(text)
+        
+        extra = component.get("extra", [])
+        if extra:
+            if not isinstance(extra, list):
+                extra = [extra]
+            text += "".join(parse_text_component(item) for item in extra)
+        return text
+    return str(component)
+
+
 def _is_nonempty_name(value: Any) -> bool:
     """判断一个候选名称值是否为有效的非空值（过滤空字典、空列表等）。"""
     if value is None:
@@ -288,10 +323,9 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
                     entity_data = entity_list[0]
                     if isinstance(entity_data, dict):
                         raw_name = entity_data.get("name")
-                        if isinstance(raw_name, dict) and "translate" in raw_name:
-                            entity_name = get_translation(raw_name["translate"])
-                        elif isinstance(raw_name, str) and raw_name.strip():
-                            entity_name = raw_name.strip()
+                        parsed_name = parse_text_component(raw_name).strip() if raw_name is not None else ""
+                        if parsed_name:
+                            entity_name = parsed_name
                         else:
                             entity_id = entity_data.get("id")
                             if isinstance(entity_id, str) and entity_id.strip():
@@ -305,10 +339,9 @@ def try_translate_message(message: dict[str, Any]) -> str | None:
                     item_data = item_list[0]
                     if isinstance(item_data, dict):
                         raw_name = item_data.get("display_name") or item_data.get("name")
-                        if isinstance(raw_name, dict) and "translate" in raw_name:
-                            item_name = get_translation(raw_name["translate"])
-                        elif isinstance(raw_name, str) and raw_name.strip():
-                            item_name = raw_name.strip()
+                        parsed_name = parse_text_component(raw_name).strip() if raw_name is not None else ""
+                        if parsed_name:
+                            item_name = parsed_name
                         else:
                             item_id = item_data.get("id")
                             if isinstance(item_id, str) and item_id.strip():
